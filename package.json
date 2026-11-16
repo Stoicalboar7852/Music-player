@@ -1,0 +1,23 @@
+{
+  "name": "phosphor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A music player whose main attraction is its visualizers",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "apple-token": "node scripts/apple-music-token.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  },
+  "dependencies": {
+    "butterchurn": "^2.6.7",
+    "butterchurn-presets": "^2.4.7",
+    "music-metadata": "^12.5.0"
+  }
+}
