@@ -99,6 +99,7 @@ export class Renderer {
   private historyAcc = 0;
 
   private artworkTex: WebGLTexture | null = null;
+  private blankTex: WebGLTexture;
   private artworkVersion = 0;
   private palette = new Float32Array(12);
   private paletteTarget = new Float32Array(12);
@@ -154,6 +155,12 @@ export class Renderer {
     this.waveTex = new DataTexture(gl, { width: WAVE_SIZE, height: 1, channels: 4 });
     this.historyTex = new DataTexture(gl, { width: BANDS, height: HISTORY_ROWS, wrapT: 'repeat' });
     this.historyTex.upload(new Uint8Array(BANDS * HISTORY_ROWS));
+
+    this.blankTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.blankTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
     this.crossfade = new Program(gl, FULLSCREEN_VS, CROSSFADE_FS);
     this.setPalette(null, true);
@@ -306,10 +313,20 @@ export class Renderer {
       return;
     }
     try {
+      // Covers can be thousands of pixels wide; 768 is plenty and keeps mipmapping cheap.
+      const srcW = 'naturalWidth' in image ? image.naturalWidth : image.width;
+      const srcH = 'naturalHeight' in image ? image.naturalHeight : image.height;
+      const size = Math.min(768, Math.max(srcW, srcH, 1));
+      const square = document.createElement('canvas');
+      square.width = square.height = size;
+      const c2d = square.getContext('2d')!;
+      // Centre-crop to a square so non-square art isn't stretched.
+      const side = Math.min(srcW, srcH);
+      c2d.drawImage(image, (srcW - side) / 2, (srcH - side) / 2, side, side, 0, 0, size, size);
       const tex = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, image);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, square);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.generateMipmap(gl.TEXTURE_2D);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -317,7 +334,7 @@ export class Renderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this.artworkTex = tex;
-      this.setPalette(paletteFromImage(image));
+      this.setPalette(paletteFromImage(square));
     } catch (error) {
       // Tainted (cross-origin, no CORS) images cannot be uploaded.
       console.warn('Artwork could not be used by the visualizers', error);
@@ -436,7 +453,7 @@ export class Renderer {
 
   private bindShared() {
     const gl = this.gl;
-    bindTexture(gl, UNIT_ARTWORK, this.artworkTex);
+    bindTexture(gl, UNIT_ARTWORK, this.artworkTex ?? this.blankTex);
     bindTexture(gl, UNIT_HISTORY, this.historyTex.tex);
     bindTexture(gl, UNIT_SPECTRUM, this.spectrumTex.tex);
     bindTexture(gl, UNIT_WAVE, this.waveTex.tex);

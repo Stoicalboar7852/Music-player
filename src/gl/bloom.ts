@@ -162,3 +162,56 @@ export class Bloom {
     this.mips = [];
   }
 }
+
+/**
+ * The common "draw a scene, then bloom it onto the output" arrangement.
+ * The scene can be rendered below output resolution (expensive shaders) and
+ * is upscaled by the composite.
+ */
+export class BloomScene {
+  readonly scene: Target;
+  private bloom: Bloom;
+
+  constructor(
+    private gl: GL,
+    hdr: boolean,
+    private opts: { depth?: boolean; scale?: number } = {},
+  ) {
+    this.scene = new Target(gl, 2, 2, { format: hdr ? 'rgba16f' : 'rgba8', depth: opts.depth });
+    this.bloom = new Bloom(gl, hdr);
+  }
+
+  resize(width: number, height: number) {
+    const scale = this.opts.scale ?? 1;
+    this.scene.resize(Math.max(2, Math.round(width * scale)), Math.max(2, Math.round(height * scale)));
+    this.bloom.resize(this.scene.width, this.scene.height);
+  }
+
+  /** Binds the scene target; draw the scene after this. */
+  begin(clear = true) {
+    const gl = this.gl;
+    this.scene.bind();
+    if (clear) {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | (this.opts.depth ? gl.DEPTH_BUFFER_BIT : 0));
+    }
+  }
+
+  /** Blooms the scene into the frame's output. */
+  end(frame: { target: WebGLFramebuffer | null; width: number; height: number }, options?: BloomOptions) {
+    this.bloom.render(this.scene.tex, this.scene.width, this.scene.height, frame.target, frame.width, frame.height, options);
+  }
+
+  get width() {
+    return this.scene.width;
+  }
+
+  get height() {
+    return this.scene.height;
+  }
+
+  dispose() {
+    this.scene.dispose();
+    this.bloom.dispose();
+  }
+}
