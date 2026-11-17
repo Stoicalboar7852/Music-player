@@ -235,6 +235,24 @@ It checks:
 
 - **Visualizers:** each one renders and animates with the track playing, and gets a screenshot (`docs/screenshots`, also used for the gallery thumbnails).
 - **Reaction:** deterministic A/B renders of every visualizer, with silence versus an isolated kick drum, a midrange chord and a hi-hat, and with beat detection withheld versus not. Each must change its image for bass, mids, treble and beats separately. The analysis layer is checked first, to show each stimulus lands only in its own band.
+  Measured on the last run (mean change per colour channel, 0–255, after 2.5 s; "motion" is how much the picture changes in 0.2 s with the full mix playing):
+
+  | Visualizer | Bass | Mids | Treble | Beats | Motion |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | Spectrum | 2.0 | 1.5 | 1.6 | 1.1 | 4.3 |
+  | Oscilloscope | 8.7 | 22.6 | 54.8 | 7.2 | 24.4 |
+  | Feedback Trails | 53.7 | 12.3 | 30.9 | 46.3 | 29.9 |
+  | Tunnel | 29.5 | 17.8 | 6.5 | 3.6 | 31.7 |
+  | Kaleidoscope | 15.5 | 33.9 | 34.0 | 13.3 | 53.5 |
+  | MilkDrop | 52.9 | 119.6 | 67.3 | n/a* | 18.7 |
+  | Particle Field | 21.4 | 14.0 | 21.6 | 18.6 | 16.7 |
+  | Pulse Orb | 5.5 | 10.1 | 3.6 | 4.5 | 16.0 |
+  | Lattice Flight | 7.9 | 10.7 | 10.6 | 9.3 | 27.9 |
+  | Frequency Terrain | 19.7 | 7.2 | 17.7 | 4.2 | 29.2 |
+  | Fluid | 57.8 | 34.0 | 97.0 | 11.8 | 24.0 |
+  | Album Halo | 5.7 | 3.0 | 3.4 | 4.5 | 11.4 |
+
+  Small numbers mean a localised change (one group of bars, a ring), not a weak one. \*MilkDrop presets detect beats from the waveform themselves, so withholding Phosphor's beat signal changes nothing; their bass response covers it.
 - **Player and interface:** tags and art from each format, decoding each format, every keyboard shortcut, crossfades, the gallery, auto-cycle, queue editing, drag and drop, folders with cover images, an undecodable file, the idle fade, fullscreen, the demo track, settings persistence.
 - **Capture:** real `getDisplayMedia` capture of another tab and of the app's own tab, including that the captured audio has no path to the speakers.
 - **Spotify, Apple Music, YouTube:** each against a local simulation of the service (in `scripts/mocks`) that follows the documented behaviour: OAuth with real PKCE verification, the Web API's 2026 response shapes, the playback SDK's events, MusicKit's queue and events, the IFrame API's states and errors, the Data API with quotas and pagination. These prove Phosphor's side of each integration. They cannot prove the real services behave as documented; see below.

@@ -211,7 +211,9 @@ async function player(browser) {
   const files = ['mp3', 'flac', 'ogg', 'wav', 'm4a'].map((ext) => path.join(AUDIO, `signal-check.${ext}`)).filter((f) => fs.existsSync(f));
   await page.setInputFiles('#file-input', files);
   await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 15000 });
-  await page.waitForFunction(() => window.__phosphor.player.queue.filter((t) => t.artist).length >= 3, null, { timeout: 15000 });
+  // Tags load in the background, two files at a time; wait for every tagged file (all but the WAV).
+  const tagged = files.filter((f) => !f.endsWith('.wav')).length;
+  await page.waitForFunction((n) => window.__phosphor.player.queue.filter((t) => t.artist).length >= n, tagged, { timeout: 15000 }).catch(() => {});
   let s = await state(page);
   check('picked files are queued and the first starts playing', s.queue.length === files.length && s.playing && s.index === 0, `${s.queue.length} tracks`);
   const mp3 = s.queue.find((t) => /MP3/.test(t.title));
