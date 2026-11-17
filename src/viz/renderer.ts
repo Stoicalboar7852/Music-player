@@ -564,7 +564,7 @@ export class Renderer {
   async offlineRun(
     id: string,
     fill: (time: number, sampleRate: number, left: Float32Array, right: Float32Array) => void,
-    opts: { frames?: number; width?: number; height?: number; seed?: number } = {},
+    opts: { frames?: number; width?: number; height?: number; seed?: number; suppressBeats?: boolean } = {},
   ): Promise<{ final: Uint8Array; earlier: Uint8Array; width: number; height: number; audio: AudioFrame }> {
     const def = this.defs.find((d) => d.id === id);
     if (!def) throw new Error(`Unknown visualizer ${id}`);
@@ -608,6 +608,12 @@ export class Renderer {
       const time = (i + 1) * dt;
       fill(time, analysis.rate, left, right);
       audio = analysis.process(left, right, dt);
+      if (opts.suppressBeats) {
+        // Same sound, but the visualizer is never told a beat happened.
+        audio.beat = false;
+        audio.beatPulse = 0;
+        audio.beatCount = 0;
+      }
       this.draw(audio, analysis, dt, time, target.fbo, width, height);
       if (i === frames - 13) earlier = read();
     }

@@ -37,8 +37,12 @@ export function createDock(app: App) {
     void player.seek((Number(seek.value) / 1000) * player.duration);
     scrubbing = false;
   });
-  // The arrow keys belong to the visualizer switcher, not to whichever slider was clicked last.
-  seek.addEventListener('keydown', (e) => e.preventDefault());
+  // The arrow keys belong to the visualizer switcher and volume, not to
+  // whichever slider was clicked last. Tab and the rest still work.
+  const ignoreArrows = (e: KeyboardEvent) => {
+    if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End' || e.key.startsWith('Page')) e.preventDefault();
+  };
+  seek.addEventListener('keydown', ignoreArrows);
 
   const transport = h(
     'div',
@@ -51,7 +55,7 @@ export function createDock(app: App) {
   const muteBtn = iconButton('volume', 'Mute (M)', () => player.toggleMute());
   const volume = h('input', { type: 'range', min: '0', max: '100', value: '80', 'aria-label': 'Volume' });
   volume.addEventListener('input', () => player.setVolume(Number(volume.value) / 100));
-  volume.addEventListener('keydown', (e) => e.preventDefault());
+  volume.addEventListener('keydown', ignoreArrows);
   const add = iconButton('plus', 'Add music (O)', () => app.openSheet('sources'));
   const queue = iconButton('queue', 'Queue (Q)', () => app.toggleQueue());
   const gallery = iconButton('grid', 'Visualizers (G)', () => app.openSheet('gallery'));

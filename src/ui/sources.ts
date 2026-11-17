@@ -163,13 +163,28 @@ export function openSources(app: App, section?: string) {
     nav.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.getAttribute('data-id') === tab.id));
   };
 
+  // Status dots stay live while the sheet is open (connecting, capture starting...).
+  const dots: (() => void)[] = [];
   for (const tab of tabs) {
-    const dot = tab.dot ? h('i', { class: `status-dot ${tab.dot() ? 'on' : ''}` }) : null;
+    const dot = tab.dot ? h('i', { class: 'status-dot' }) : null;
+    if (dot && tab.dot) {
+      const lit = tab.dot;
+      dots.push(() => dot.classList.toggle('on', lit()));
+    }
     nav.append(
       h('button', { class: 'tab', type: 'button', 'data-id': tab.id, onClick: () => show(tab.id) }, icon(tab.icon, 18), tab.label, dot),
     );
   }
+  const refreshDots = () => dots.forEach((update) => update());
+  const unsubscribe = [app.capture.on('change', refreshDots), ...app.services.map((service) => service.onStatus(refreshDots))];
+  refreshDots();
   show(section ?? 'files');
 
-  return { body: h('div', null, nav, panel), onClose: () => cleanup?.() };
+  return {
+    body: h('div', null, nav, panel),
+    onClose: () => {
+      cleanup?.();
+      unsubscribe.forEach((off) => off());
+    },
+  };
 }

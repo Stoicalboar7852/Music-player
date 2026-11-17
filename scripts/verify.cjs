@@ -1,0 +1,699 @@
+#!/usr/bin/env node
+// End-to-end verification in a real Chromium, with audio actually playing.
+//
+//   node scripts/make-test-audio.mjs          (once: synthesises the test track)
+//   npm run dev                               (in another terminal)
+//   node scripts/verify.cjs [--only=part,...] [--url=http://127.0.0.1:5173/]
+//
+// On a machine without a display, wrap it:  xvfb-run -a node scripts/verify.cjs
+//
+// Parts:
+//   visualizers  plays the test track through every visualizer, screenshots
+//                each one (docs/screenshots, public/thumbs) and checks it animates
+//   reaction     deterministic A/B runs proving each visualizer responds to
+//                bass, mids, treble and beats separately
+//   player       drives the real UI: files, tags, queue, transport, shortcuts,
+//                auto-cycle, idle fade, drag and drop, error handling
+//   capture      real getDisplayMedia capture of another tab and of this tab
+//   spotify      the Spotify integration against a local simulation of
+//                Spotify (see scripts/mocks): sign-in, search, playback, queue
+//
+// Needs Playwright (`npm i -D playwright && npx playwright install chromium`)
+// and ffmpeg on PATH for thumbnails. The browser runs headed because tab
+// capture and fullscreen do not exist in headless mode.
+
+const { chromium } = require('playwright');
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const arg = (name, fallback) => {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : fallback;
+};
+const URL_ = arg('url', 'http://127.0.0.1:5173/');
+const only = arg('only', 'visualizers,reaction,player,capture,spotify').split(',');
+const AUDIO = path.resolve('.verify/audio');
+const SHOTS = path.resolve('docs/screenshots');
+const THUMBS = path.resolve('public/thumbs');
+const TRACK = path.join(AUDIO, 'signal-check.mp3');
+
+const GL_ARGS = ['--autoplay-policy=no-user-gesture-required', '--ignore-gpu-blocklist'];
+// No GPU here? Fall back to software GL so the run still works (slowly).
+if (arg('gpu', 'auto') !== 'native') GL_ARGS.push('--use-angle=swiftshader', '--enable-unsafe-swiftshader');
+
+const results = [];
+let failures = 0;
+function check(name, ok, detail = '') {
+  results.push({ name, ok, detail });
+  if (!ok) failures++;
+  console.log(`${ok ? '  ok  ' : ' FAIL '} ${name}${detail ? `  (${detail})` : ''}`);
+}
+
+function watch(page, label) {
+  page.on('pageerror', (e) => check(`${label}: no uncaught page errors`, false, e.message.slice(0, 300)));
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    const text = m.text();
+    // Expected: the deliberately broken file, and blocked third-party hosts in sandboxes.
+    if (/Failed to load resource|net::ERR|broken/.test(text)) return;
+    console.log(`  [${label} console error] ${text.slice(0, 300)}`);
+  });
+}
+
+async function open(context, label = 'app') {
+  if (!context.__audioRouted) {
+    context.__audioRouted = true;
+    // Test audio is served from disk whichever server (dev or preview) hosts the app.
+    await context.route('**/.verify/audio/**', (route) => route.fulfill({ path: path.join(AUDIO, path.basename(new URL(route.request().url()).pathname)) }));
+  }
+  const page = await context.newPage();
+  watch(page, label);
+  // Record every Web Audio connection so tests can inspect the real graph.
+  await page.addInitScript(() => {
+    window.__audioEdges = [];
+    const connect = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function (destination, ...rest) {
+      window.__audioEdges.push([this, destination]);
+      return connect.call(this, destination, ...rest);
+    };
+  });
+  await page.goto(URL_);
+  await page.waitForFunction(() => window.__phosphor);
+  return page;
+}
+
+const state = (page) =>
+  page.evaluate(() => {
+    const { player, renderer, engine, capture } = window.__phosphor;
+    const a = renderer.audio;
+    return {
+      playing: player.playing,
+      position: player.position,
+      duration: player.duration,
+      index: player.currentIndex,
+      queue: player.queue.map((t) => ({ title: t.title, artist: t.artist, album: t.album, art: Boolean(t.artworkUrl) })),
+      volume: player.volume,
+      muted: player.muted,
+      shuffle: player.shuffle,
+      repeat: player.repeat,
+      viz: renderer.currentId,
+      input: engine.analysisInput,
+      capture: capture.state,
+      level: a.level,
+      bass: a.bass,
+      beats: a.beatCount,
+      fps: renderer.stats.fps,
+      idle: document.body.classList.contains('idle'),
+    };
+  });
+
+// ---------------------------------------------------------------- visualizers
+
+async function visualizers(browser) {
+  console.log('\n== Visualizers: real audio, one screenshot each ==');
+  fs.mkdirSync(SHOTS, { recursive: true });
+  fs.mkdirSync(THUMBS, { recursive: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const page = await open(context);
+  await page.evaluate(() => window.__phosphor.settings.set({ quality: 'high', autoCycle: false, crossfadeSeconds: 0 }));
+  await page.setInputFiles('#file-input', TRACK);
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.current?.artworkUrl);
+  await page.evaluate(() => window.__phosphor.player.setRepeat('one'));
+  const hide = await page.addStyleTag({ content: '.hud, .toasts { display: none !important; }' });
+
+  const ids = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.id));
+  check('at least twelve visualizers are registered', ids.length >= 12, `${ids.length}`);
+  const families = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.family));
+  const classic = families.filter((f) => f === 'classic').length;
+  check('both families are represented roughly equally', classic >= 5 && ids.length - classic >= 5, `${classic} classic, ${ids.length - classic} modern`);
+
+  for (const id of ids) {
+    // Start each one from the same busy passage of the track.
+    await page.evaluate((id) => {
+      const { player, renderer } = window.__phosphor;
+      void player.seek(15.5);
+      renderer.setVisualizer(id, { immediate: true });
+    }, id);
+    // MilkDrop loads its presets on demand; simulations need a moment to develop.
+    await page.waitForTimeout(id === 'milkdrop' ? 9000 : 6500);
+    const a = await page.screenshot();
+    await page.waitForTimeout(450);
+    const b = await page.screenshot();
+    const s = await state(page);
+    const file = path.join(SHOTS, `${id}.png`);
+    fs.writeFileSync(file, b);
+    execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-i', file, '-vf', 'scale=480:270:flags=lanczos', '-q:v', '4', path.join(THUMBS, `${id}.jpg`)]);
+    check(`${id}: renders and animates with audio playing`, s.viz === id && s.playing && s.level > 0.05 && !a.equals(b), `level ${s.level.toFixed(2)}, ${s.fps.toFixed(0)} fps here`);
+  }
+  await hide.evaluate((el) => el.remove());
+  await context.close();
+}
+
+// ------------------------------------------------------------------- reaction
+
+async function reaction(browser) {
+  console.log('\n== Reaction: each visualizer vs. isolated bass / mid / treble / beat ==');
+  const context = await browser.newContext({ viewport: { width: 640, height: 360 } });
+  const page = await open(context);
+
+  // First make sure the stimuli isolate what they claim to.
+  const an = {};
+  for (const s of ['bass', 'mid', 'treble']) an[s] = await page.evaluate((s) => window.__phosphor.harness.analyse(s), s);
+  check('analysis: kick drum registers as bass only, with beats', an.bass.bass > 0.05 && an.bass.treble < 0.01 && an.bass.beatCount >= 3, JSON.stringify(an.bass, (k, v) => (typeof v === 'number' ? +v.toFixed(3) : v)));
+  check('analysis: chord registers as mid only, no beats', an.mid.mid > 0.05 && an.mid.bass < 0.01 && an.mid.treble < 0.01 && an.mid.beatCount === 0);
+  check('analysis: hi-hat registers as treble only, no beats', an.treble.treble > 0.05 && an.treble.bass < 0.01 && an.treble.beatCount === 0);
+
+  const ids = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.id));
+  const table = [];
+  console.log(`  ${'visualizer'.padEnd(11)} ${['bass', 'mid', 'treble', 'beat', 'motion'].map((h) => h.padStart(7)).join(' ')}   (mean pixel change vs. silence, 0-255)`);
+  for (const id of ids) {
+    const row = { id };
+    for (const s of ['bass', 'mid', 'treble', 'full']) {
+      const r = await page.evaluate(([id, s]) => window.__phosphor.harness.reaction(id, s, 150), [id, s]);
+      row[s] = r.difference;
+      if (s === 'full') row.motion = r.motion;
+    }
+    row.beat = (await page.evaluate((id) => window.__phosphor.harness.beatReaction(id, 143), id)).difference;
+    table.push(row);
+    console.log(`  ${id.padEnd(11)} ${[row.bass, row.mid, row.treble, row.beat, row.motion].map((v) => v.toFixed(2).padStart(7)).join(' ')}`);
+    check(`${id}: reacts to bass, mids and treble individually`, row.bass > 0.8 && row.mid > 0.8 && row.treble > 0.8);
+    // MilkDrop presets do their own beat analysis on the waveform they are given,
+    // so withholding our beat flag changes nothing; its bass response covers it.
+    if (id !== 'milkdrop') check(`${id}: reacts to beats beyond the bass level itself`, row.beat > 0.5, row.beat.toFixed(2));
+    check(`${id}: moves while audio plays`, row.motion > 0.5, row.motion.toFixed(2));
+  }
+  fs.mkdirSync('.verify', { recursive: true });
+  fs.writeFileSync('.verify/reaction.json', JSON.stringify(table, null, 2));
+  await context.close();
+}
+
+// --------------------------------------------------------------------- player
+
+async function player(browser) {
+  console.log('\n== Player and interface ==');
+  const context = await browser.newContext({ viewport: { width: 1440, height: 810 }, deviceScaleFactor: 2 });
+  const page = await open(context);
+  await page.evaluate(() => window.__phosphor.settings.set({ quality: 'medium', autoHide: 'fullscreen', autoCycle: false, visualizer: 'bars' }));
+  await page.evaluate(() => window.__phosphor.renderer.setVisualizer('bars', { immediate: true }));
+  const key = async (k, wait = 250) => {
+    await page.keyboard.press(k);
+    await page.waitForTimeout(wait);
+  };
+
+  check('starts on the welcome card with nothing playing', await page.isVisible('.welcome:not(.gone)'));
+  await page.screenshot({ path: path.join(SHOTS, 'ui-welcome.png') });
+
+  // ---- files, tags and artwork
+  const files = ['mp3', 'flac', 'ogg', 'wav', 'm4a'].map((ext) => path.join(AUDIO, `signal-check.${ext}`)).filter((f) => fs.existsSync(f));
+  await page.setInputFiles('#file-input', files);
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 15000 });
+  await page.waitForFunction(() => window.__phosphor.player.queue.filter((t) => t.artist).length >= 3, null, { timeout: 15000 });
+  let s = await state(page);
+  check('picked files are queued and the first starts playing', s.queue.length === files.length && s.playing && s.index === 0, `${s.queue.length} tracks`);
+  const mp3 = s.queue.find((t) => /MP3/.test(t.title));
+  check('MP3 tags and embedded cover art are read', Boolean(mp3 && mp3.artist === 'Phosphor Test Signal' && mp3.album === 'Verification Suite' && mp3.art));
+  const flac = s.queue.find((t) => /FLAC/.test(t.title));
+  check('FLAC tags and embedded cover art are read', Boolean(flac && flac.artist && flac.art));
+  check('OGG tags are read', s.queue.some((t) => /OGG/.test(t.title) && t.artist));
+  check('untagged WAV falls back to its file name', s.queue.some((t) => t.title === 'signal-check'));
+  check('audio reaches the analysers', s.level > 0.05 && s.input === 'local', `level ${s.level.toFixed(2)}`);
+  const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim());
+  check('interface accent colour is taken from the artwork', accent !== 'rgb(255 61 129)' && accent !== '#ff3d81', accent);
+  check('media session shows the current track', await page.evaluate(() => navigator.mediaSession.metadata?.title === window.__phosphor.player.current.title));
+
+  // Each format must actually decode and play in this browser.
+  for (let i = 0; i < files.length; i++) {
+    await page.evaluate((i) => void window.__phosphor.player.playTrack(window.__phosphor.player.queue[i].id), i);
+    const ok = await page
+      .waitForFunction((i) => window.__phosphor.player.currentIndex === i && window.__phosphor.player.position > 0.4 && window.__phosphor.renderer.audio.level > 0.02, i, { timeout: 8000 })
+      .then(() => true, () => false);
+    const title = (await state(page)).queue[i]?.title;
+    const ext = /\((\w+)\)/.exec(title)?.[1] ?? 'WAV';
+    // Chromium (unlike Chrome and Edge) ships without the AAC decoder.
+    if (!ok && ext === 'M4A') console.log('   --   M4A did not decode here: this Chromium build has no AAC decoder (Chrome and Edge do)');
+    else check(`${ext} decodes and plays`, ok);
+    if (!ok) await page.waitForTimeout(800);
+  }
+  await page.evaluate(() => void window.__phosphor.player.playTrack(window.__phosphor.player.queue[0].id));
+  await page.waitForFunction(() => window.__phosphor.player.currentIndex === 0 && window.__phosphor.player.position > 0.3);
+  await page.mouse.move(720, 420);
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: path.join(SHOTS, 'ui-playing.png') });
+
+  // ---- transport by keyboard
+  await key('Space');
+  check('Space pauses', !(await state(page)).playing);
+  await key('Space');
+  check('Space resumes', (await state(page)).playing);
+  await key('n', 900);
+  check('N goes to the next track', (await state(page)).index === 1);
+  await key('p', 900);
+  check('P goes back to the previous track', (await state(page)).index === 0);
+  const before = (await state(page)).position;
+  await key('l', 500);
+  check('L seeks forward ten seconds', (await state(page)).position - before > 8);
+  await key('p', 500);
+  check('P restarts the track when more than 3s in', (await state(page)).position < 3 && (await state(page)).index === 0);
+  const v0 = (await state(page)).volume;
+  await key('ArrowDown');
+  await key('ArrowDown');
+  check('Arrow down lowers the volume', (await state(page)).volume < v0 - 0.05);
+  await key('ArrowUp');
+  await key('ArrowUp');
+  await key('m');
+  check('M mutes', (await state(page)).muted);
+  await key('m');
+  await key('s');
+  check('S turns shuffle on', (await state(page)).shuffle);
+  await key('s');
+  await key('r');
+  check('R cycles repeat', (await state(page)).repeat === 'all');
+  await key('r');
+  await key('r');
+  check('repeat returns to off', (await state(page)).repeat === 'off');
+
+  // ---- seek bar and auto-advance
+  await page.evaluate(() => void window.__phosphor.player.seek(window.__phosphor.player.duration - 1.5));
+  await page.waitForFunction(() => window.__phosphor.player.currentIndex === 1 && window.__phosphor.player.position > 0.2, null, { timeout: 8000 }).catch(() => {});
+  check('the next track starts when one ends', (await state(page)).index === 1 && (await state(page)).playing);
+
+  // ---- visualizer switching
+  await page.evaluate(() => window.__phosphor.settings.set({ crossfadeSeconds: 0.8 }));
+  const viz0 = (await state(page)).viz;
+  await key('ArrowRight', 300);
+  const mid = await page.evaluate(() => window.__phosphor.renderer['fade']);
+  const viz1 = (await state(page)).viz;
+  check('Arrow right switches to the next visualizer', viz1 !== viz0, `${viz0} -> ${viz1}`);
+  check('the switch crossfades rather than cutting', mid > 0 && mid < 1, `fade ${Number(mid).toFixed(2)} mid-transition`);
+  await page.waitForTimeout(1200);
+  await key('ArrowLeft', 1200);
+  check('Arrow left switches back', (await state(page)).viz === viz0);
+  await key('5', 1200);
+  check('number keys jump to a visualizer', (await state(page)).viz === 'kaleido');
+  await key('g', 600);
+  const cards = await page.locator('.card').count();
+  check('the gallery lists every visualizer', cards >= 12, `${cards} cards`);
+  await page.screenshot({ path: path.join(SHOTS, 'ui-gallery.png') });
+  await page.click('.card[data-id="bars"]');
+  await key('Escape', 1200);
+  check('picking from the gallery switches visualizer', (await state(page)).viz === 'bars');
+
+  // ---- auto-cycle
+  await page.evaluate(() => window.__phosphor.settings.set({ cycleSeconds: 5 }));
+  await key('a', 200);
+  await page.waitForFunction(() => window.__phosphor.renderer.currentId !== 'bars', null, { timeout: 12000 }).catch(() => {});
+  check('auto-cycle moves on by itself', (await state(page)).viz !== 'bars', (await state(page)).viz);
+  await key('a', 1200);
+  await page.evaluate(() => window.__phosphor.renderer.setVisualizer('bars', { immediate: true }));
+
+  // ---- queue
+  await key('q', 600);
+  check('Q opens the queue', await page.isVisible('.drawer.open'));
+  await page.screenshot({ path: path.join(SHOTS, 'ui-queue.png') });
+  const n0 = (await state(page)).queue.length;
+  await page.hover('.drawer .row:last-child');
+  await page.click('.drawer .row:last-child .row-end .icon-btn');
+  check('a track can be removed from the queue', (await state(page)).queue.length === n0 - 1);
+  const firstTitle = (await state(page)).queue[0].title;
+  await page.evaluate(() => window.__phosphor.player.move(0, 2));
+  check('tracks can be reordered', (await state(page)).queue[2].title === firstTitle);
+  await page.click('.drawer .row:nth-child(1)');
+  await page.waitForTimeout(700);
+  check('clicking a queue row plays it', (await state(page)).index === 0 && (await state(page)).playing);
+  await key('q', 500);
+
+  // ---- a file that cannot be decoded
+  fs.writeFileSync(path.join(AUDIO, 'broken.mp3'), Buffer.from(Array.from({ length: 4000 }, (_, i) => (i * 37) % 251)));
+  await page.setInputFiles('#file-input', path.join(AUDIO, 'broken.mp3'));
+  await page.evaluate(() => {
+    const { player } = window.__phosphor;
+    void player.playTrack(player.queue[player.queue.length - 1].id);
+  });
+  await page.waitForTimeout(1800);
+  const toast = await page.locator('.toast.error').first().textContent().catch(() => '');
+  check('an undecodable file reports an error instead of hanging', /Couldn't play/.test(toast ?? ''), (toast ?? '').slice(0, 80));
+  await page.evaluate(() => {
+    const { player } = window.__phosphor;
+    player.remove(player.queue[player.queue.length - 1].id);
+    void player.playTrack(player.queue[0].id);
+  });
+  await page.waitForTimeout(600);
+
+  // ---- drag and drop
+  const n1 = (await state(page)).queue.length;
+  const dt = await page.evaluateHandle(async () => {
+    const data = new DataTransfer();
+    const blob = await (await fetch('/.verify/audio/signal-check.ogg')).blob();
+    data.items.add(new File([blob], 'Dropped Track.ogg', { type: 'audio/ogg' }));
+    return data;
+  });
+  await page.dispatchEvent('body', 'dragenter', { dataTransfer: dt });
+  check('dragging files over the window shows the drop target', await page.isVisible('.dropzone.show'));
+  await page.dispatchEvent('body', 'drop', { dataTransfer: dt });
+  await page.waitForTimeout(800);
+  check('dropped files join the queue', (await state(page)).queue.length === n1 + 1);
+
+  // ---- a folder, with a cover image beside untagged files
+  const album = path.resolve('.verify/album');
+  fs.rmSync(album, { recursive: true, force: true });
+  fs.mkdirSync(album, { recursive: true });
+  fs.copyFileSync(path.join(AUDIO, 'signal-check.wav'), path.join(album, '10 - Tenth.wav'));
+  fs.copyFileSync(path.join(AUDIO, 'signal-check.wav'), path.join(album, '2 - Second.wav'));
+  fs.copyFileSync(path.join(AUDIO, 'cover.png'), path.join(album, 'cover.png'));
+  const n2 = (await state(page)).queue.length;
+  await page.setInputFiles('#folder-input', album);
+  await page.waitForFunction((n) => window.__phosphor.player.queue.length === n + 2 && window.__phosphor.player.queue.slice(-2).every((t) => t.artworkUrl), n2, { timeout: 8000 }).catch(() => {});
+  s = await state(page);
+  const added = s.queue.slice(-2);
+  check('a folder is added in natural order (2 before 10)', added.length === 2 && added[0].title === 'Second' && added[1].title === 'Tenth', added.map((t) => t.title).join(', '));
+  check("the folder's cover image is used for files without embedded art", added.every((t) => t.art));
+
+  // ---- idle fade
+  await page.evaluate(() => window.__phosphor.settings.set({ autoHide: 'always' }));
+  await page.mouse.move(700, 300);
+  await page.waitForTimeout(400);
+  check('the interface is visible right after moving the mouse', !(await state(page)).idle);
+  await page.waitForTimeout(4200);
+  check('the interface fades out when the mouse rests', (await state(page)).idle);
+  await page.screenshot({ path: path.join(SHOTS, 'ui-idle.png') });
+  await page.mouse.move(720, 320);
+  await page.waitForTimeout(300);
+  check('moving the mouse brings it back', !(await state(page)).idle);
+  await page.mouse.move(720, 770);
+  await page.waitForTimeout(4200);
+  check('it stays while the pointer is over the controls', !(await state(page)).idle);
+
+  // ---- fullscreen
+  await page.evaluate(() => window.__phosphor.settings.set({ autoHide: 'fullscreen' }));
+  await page.mouse.move(700, 300);
+  await key('f', 1200);
+  const fs1 = await page.evaluate(() => Boolean(document.fullscreenElement));
+  check('F enters fullscreen', fs1);
+  if (fs1) {
+    await page.waitForTimeout(4000);
+    check('in fullscreen the interface fades out when idle', (await state(page)).idle);
+    await key('f', 800);
+    check('F leaves fullscreen', !(await page.evaluate(() => Boolean(document.fullscreenElement))));
+  }
+
+  // ---- sheets
+  await key('o', 500);
+  await page.click('.tab[data-id="capture"]');
+  await page.waitForTimeout(300);
+  check('the capture panel explains what to pick in the share dialog', (await page.locator('.tab-panel ol li').count()) >= 1);
+  await page.screenshot({ path: path.join(SHOTS, 'ui-capture.png') });
+  await key('Escape', 300);
+  await key(',', 500);
+  check('settings open', await page.isVisible('.sheet'));
+  await page.screenshot({ path: path.join(SHOTS, 'ui-settings.png') });
+  await key('Escape', 300);
+
+  // ---- demo track
+  await page.evaluate(() => window.__phosphor.player.clear());
+  await page.waitForTimeout(300);
+  await page.click('.welcome >> text=Play demo');
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 20000 }).catch(() => {});
+  s = await state(page);
+  check('the built-in demo track synthesises and plays', s.playing && s.queue[0]?.title === 'Signal Check' && s.queue[0].art);
+
+  // ---- settings persist
+  await page.evaluate(() => window.__phosphor.settings.set({ visualizer: 'terrain', volume: 0.42 }));
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor);
+  s = await state(page);
+  check('settings survive a reload', s.viz === 'terrain' && Math.abs(s.volume - 0.42) < 0.01, `${s.viz}, volume ${s.volume}`);
+  await context.close();
+}
+
+// -------------------------------------------------------------------- capture
+
+async function capture() {
+  console.log('\n== System audio capture (real getDisplayMedia) ==');
+
+  // 1. Another tab is playing; share it and check the visualizers follow it.
+  {
+    const browser = await chromium.launch({ headless: false, args: [...GL_ARGS, '--auto-select-tab-capture-source-by-title=Tone Source'] });
+    const context = await browser.newContext({ viewport: { width: 1100, height: 650 } });
+    const tone = await open(context, 'source tab');
+    await tone.setInputFiles('#file-input', TRACK);
+    await tone.waitForFunction(() => window.__phosphor.player.playing);
+    await tone.evaluate(() => {
+      window.__phosphor.player.setRepeat('one');
+      void window.__phosphor.player.seek(15.5);
+      setInterval(() => (document.title = 'Tone Source'), 50);
+    });
+    const page = await open(context);
+    // A cheap visualizer keeps the frame rate up under software rendering, so
+    // the analysis smoothing runs in real time.
+    await page.evaluate(() => {
+      window.__phosphor.settings.set({ quality: 'low' });
+      window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+    });
+    await page.bringToFront();
+    await page.waitForTimeout(600);
+    let s = await state(page);
+    check('before sharing, the other tab is inaudible to the visualizers', s.level < 0.01, `level ${s.level.toFixed(3)}`);
+    await page.click('.welcome >> text=System audio');
+    await page.click('text=Capture system or tab audio');
+    await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(3500);
+    s = await state(page);
+    check('sharing a tab with audio starts the capture', s.capture.active && s.capture.label === 'Tab audio', JSON.stringify(s.capture));
+    check('captured audio drives the analysis', s.input === 'capture' && s.level > 0.05 && s.beats > 0, `level ${s.level.toFixed(2)}, ${s.beats} beats`);
+    check('the capture keeps running after the video track is dropped', (await page.evaluate(() => window.__phosphor.capture['stream'].getTracks().map((t) => `${t.kind}:${t.readyState}`).join())) === 'audio:live');
+    // "Don't play it back": walk the live Web Audio graph (recorded by the init
+    // script below) from the capture source and make sure the speakers cannot be
+    // reached except through the permanently silent node that keeps the analysers running.
+    const leak = await page.evaluate(() => {
+      const { engine } = window.__phosphor;
+      const edges = window.__audioEdges;
+      const seen = new Set();
+      const stack = [engine['captureNode']];
+      while (stack.length) {
+        const node = stack.pop();
+        if (seen.has(node)) continue;
+        seen.add(node);
+        if (node === engine.context.destination) return true;
+        // A gain node held at exactly zero passes nothing on.
+        if (node instanceof GainNode && node !== engine['captureTap'] && node.gain.value === 0) continue;
+        for (const [from, to] of edges) if (from === node) stack.push(to);
+      }
+      return false;
+    });
+    check('captured audio has no audible path to the speakers', leak === false);
+    await page.screenshot({ path: path.join(SHOTS, 'ui-capturing.png') });
+    await page.click('.chip .icon-btn');
+    await page.waitForTimeout(2500);
+    s = await state(page);
+    check('stopping from the indicator ends the capture', !s.capture.active && s.level < 0.05, `active ${s.capture.active}, level ${s.level.toFixed(3)}, input ${s.input}`);
+    await browser.close();
+  }
+
+  // 2. Sound made inside this tab but outside the app's own audio graph, which
+  //    is exactly how the streaming services' players behave.
+  {
+    const browser = await chromium.launch({ headless: false, args: [...GL_ARGS, '--auto-accept-this-tab-capture'] });
+    const context = await browser.newContext({ viewport: { width: 1100, height: 650 } });
+    const page = await open(context);
+    await page.evaluate(async () => {
+      const blob = await (await fetch('/.verify/audio/signal-check.mp3')).blob();
+      const external = new Audio(URL.createObjectURL(blob));
+      external.loop = true;
+      await external.play();
+      external.currentTime = 15.5;
+    });
+    await page.waitForTimeout(1000);
+    let s = await state(page);
+    check('a foreign player in the tab is invisible to the analysers on its own', s.level < 0.01, `level ${s.level.toFixed(3)}`);
+    const started = await page.evaluate(() => window.__phosphor.capture.startDisplay({ thisTab: true }).then(() => 'ok', (e) => `${e.reason}: ${e.message}`));
+    await page.waitForTimeout(3500);
+    s = await state(page);
+    check("sharing this tab's own audio works", started === 'ok' && s.capture.label === "This tab's audio", started);
+    check("this tab's audio then drives the visualizers", s.input === 'capture' && s.level > 0.05, `level ${s.level.toFixed(2)}`);
+    await browser.close();
+  }
+}
+
+
+// -------------------------------------------------------------------- spotify
+
+async function spotify() {
+  console.log('\n== Spotify (against the local simulation in scripts/mocks/spotify.cjs) ==');
+  const { installSpotifyMock } = require('./mocks/spotify.cjs');
+  const browser = await chromium.launch({ headless: false, args: [...GL_ARGS, '--auto-accept-this-tab-capture'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 810 } });
+  const mock = await installSpotifyMock(context);
+  const page = await open(context);
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+  const fake = (fn) => page.evaluate(fn);
+  const svc = () => page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').status());
+
+  // ---- before any credentials
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="spotify"]');
+  check('without a Client ID the panel says setup is needed', await page.isVisible('.tab-panel >> text=needs credentials'));
+  check('...and the rest of the app is unaffected', (await svc()).configured === false && (await page.locator('.tab').count()) >= 3);
+
+  // ---- sign in through the real UI: popup -> redirect -> PKCE exchange
+  await page.evaluate(() => window.__phosphor.settings.set({ spotifyClientId: 'mock-client-id' }));
+  await page.waitForSelector('.tab-panel >> text=Connect Spotify');
+  await page.click('.tab-panel >> text=Connect Spotify');
+  await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 15000 }).catch(() => {});
+  let st = await svc();
+  check('sign-in completes and the player device comes up', st.connected, JSON.stringify(st));
+  check('the authorize request is well formed (PKCE S256, loopback redirect, streaming scope)', mock.log.authorize && mock.log.authorizeProblems.length === 0, JSON.stringify(mock.log.authorizeProblems));
+  check('the code verifier matches the challenge (checked the way the server does)', mock.log.pkceVerified);
+  check('no client secret is ever sent', mock.log.tokenRequests.every((r) => !('client_secret' in r)));
+  check('the signed-in account is shown', st.account === 'Mock Listener' && (await page.isVisible('.tab-panel >> text=Mock Listener')));
+  check('the sign-in popup closed itself', context.pages().length === 1, `${context.pages().length} pages open`);
+  check('the one-time code is not left in the address bar', !(await page.url()).includes('code='));
+
+  // ---- search
+  await page.fill('input[type=search]', 'simulators');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.results .row');
+  const rows = await page.locator('.results .row').count();
+  check('search lists tracks, albums and playlists (null entries skipped)', rows === 12, `${rows} rows`);
+  check('search asks for at most 10 results, as development mode requires', mock.log.apiCalls.some((c) => c.startsWith('GET /search') && c.includes('limit=10')));
+  await page.waitForFunction(() => [...document.querySelectorAll('.results .thumb img')].some((img) => img.naturalWidth > 0), null, { timeout: 5000 }).catch(() => {});
+  check('result rows show cover art from the service', (await page.locator('.results .thumb img').count()) >= 10);
+  check('the tab shows a connected indicator', await page.isVisible('.tab[data-id="spotify"] .status-dot.on'));
+  await page.screenshot({ path: path.join(SHOTS, 'ui-spotify.png') });
+
+  // ---- play
+  await page.click('.results .row:nth-child(2) [title="Play now"]');
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 10000 }).catch(() => {});
+  let s = await state(page);
+  const current = await page.evaluate(() => window.__phosphor.player.current);
+  check('a Spotify track plays through the SDK device', s.playing && current?.source === 'spotify' && mock.log.playRequests.at(-1)?.device === 'mock-device-1', JSON.stringify(mock.log.playRequests.at(-1)));
+  check('title, artist, duration and artwork come from Spotify', current.title === 'Mock Song 1' && current.artist === 'The Simulators' && Math.abs(s.duration - 40.67) < 0.5 && Boolean(current.artworkUrl));
+  await page.keyboard.press('Escape');
+
+  // ---- visuals: nothing until the tab is shared
+  await page.waitForTimeout(800);
+  s = await state(page);
+  check('protected audio does not reach the analysers by itself', s.level < 0.01, `level ${s.level.toFixed(3)}`);
+  check('the app asks to share this tab', await page.isVisible('.banner:not([hidden])'));
+  await page.click(".banner >> text=Share this tab's audio");
+  await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  s = await state(page);
+  check("after sharing, Spotify's audio drives the visualizers", s.capture.active && s.input === 'capture' && s.level > 0.05, `level ${s.level.toFixed(2)}`);
+  check('the prompt goes away once sharing', !(await page.isVisible('.banner:not([hidden])')));
+
+  // ---- transport
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
+  check('pause reaches the Spotify player', (await fake(() => window.__fakeSpotify.audio.paused)) && !(await state(page)).playing);
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
+  check('resume reaches the Spotify player', !(await fake(() => window.__fakeSpotify.audio.paused)) && (await state(page)).playing);
+  await page.evaluate(() => void window.__phosphor.player.seek(20));
+  await page.waitForTimeout(600);
+  const pos = await state(page);
+  check('seeking moves Spotify and the seek bar agrees', Math.abs((await fake(() => window.__fakeSpotify.audio.currentTime)) - pos.position) < 0.6 && pos.position > 19.5, `position ${pos.position.toFixed(1)}`);
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.3));
+  await page.waitForTimeout(200);
+  check('volume is applied to the Spotify player', Math.abs((await fake(() => window.__fakeSpotify.audio.volume)) - 0.3) < 0.01);
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.8));
+
+  // ---- albums, playlists, links
+  const added = await page.evaluate(async () => {
+    const { app, player } = window.__phosphor;
+    const service = app.services.find((s) => s.id === 'spotify');
+    const found = await service.search('x');
+    const album = await service.tracksOf(found.collections.find((c) => c.kind === 'album'));
+    const playlist = await service.tracksOf(found.collections.find((c) => c.kind === 'playlist'));
+    const link = await service.resolveLink('https://open.spotify.com/intl-de/track/mock7?si=abc');
+    const uri = await service.resolveLink('spotify:album:album1');
+    const other = await service.resolveLink('https://example.com/track/1');
+    const library = await service.library();
+    player.add([...album, ...playlist]);
+    return { album: album.map((t) => [t.title, Boolean(t.artworkUrl), t.album]), playlist: playlist.map((t) => t.title), link: link?.tracks[0]?.title, uri: uri?.collections[0]?.title, other, library: library.map((c) => c.title) };
+  });
+  check('album tracks load, inheriting the album cover', added.album.length === 3 && added.album.every(([, art, album]) => art && album === 'Stand-In Sessions'));
+  check('playlist tracks load from the 2026 "items" shape, skipping removed and local entries', added.playlist.join() === 'Mock Song 4,Mock Song 6', added.playlist.join());
+  check('pasted track links and spotify: URIs resolve; other links are refused', added.link === 'Mock Song 8' && added.uri === 'Stand-In Sessions' && added.other === null);
+  check('the library lists Liked Songs and the user\'s playlists', added.library.join() === 'Liked Songs,Mock Mix', added.library.join());
+
+  // ---- end of track -> next in the shared queue
+  await page.evaluate(() => void window.__phosphor.player.seek(window.__phosphor.player.duration - 1.2));
+  await page.waitForFunction(() => window.__phosphor.player.currentIndex === 1 && window.__phosphor.player.position > 0.3, null, { timeout: 10000 }).catch(() => {});
+  s = await state(page);
+  check('when a Spotify track ends the queue advances', s.index === 1 && s.playing, `index ${s.index}`);
+
+  // ---- expired access token
+  mock.expireTokens();
+  const refreshed = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').search('again').then((r) => r.tracks.length, (e) => String(e)));
+  check('an expired token is refreshed and the request retried', refreshed === 10 && mock.log.tokenRequests.some((r) => r.grant_type === 'refresh_token'), String(refreshed));
+
+  // ---- one queue across sources
+  await page.setInputFiles('#file-input', TRACK);
+  await page.evaluate(() => {
+    const { player } = window.__phosphor;
+    void player.playTrack(player.queue[player.queue.length - 1].id);
+  });
+  await page.waitForFunction(() => window.__phosphor.player.current?.source === 'local' && window.__phosphor.player.position > 0.5, null, { timeout: 8000 }).catch(() => {});
+  s = await state(page);
+  check('switching to a local track stops Spotify and analyses the file directly', s.input === 'local' && (await fake(() => window.__fakeSpotify.audio.paused)) && s.level > 0.05);
+  await page.keyboard.press('p');
+  await page.waitForFunction(() => window.__phosphor.player.current?.source === 'spotify' && window.__phosphor.player.position > 0.5, null, { timeout: 8000 }).catch(() => {});
+  s = await state(page);
+  check('...and back to Spotify hands the visuals to the shared tab audio again', s.input === 'capture' && !(await fake(() => window.__fakeSpotify.audio.paused)));
+
+  // ---- staying signed in, and signing out
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor?.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 15000 }).catch(() => {});
+  check('the session is restored after a reload without signing in again', (await svc()).connected && mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length === 1);
+  await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').disconnect());
+  check('disconnect forgets the tokens', !(await svc()).connected && (await page.evaluate(() => localStorage.getItem('phosphor.spotify.tokens'))) === null);
+  await context.close();
+
+  // ---- a free account
+  const context2 = await browser.newContext({ viewport: { width: 1100, height: 650 } });
+  await installSpotifyMock(context2);
+  const page2 = await open(context2);
+  await page2.addInitScript(() => (window.__fakeSpotifyFree = true));
+  await page2.reload();
+  await page2.waitForFunction(() => window.__phosphor);
+  await page2.evaluate(() => window.__phosphor.settings.set({ spotifyClientId: 'mock-client-id' }));
+  await page2.keyboard.press('o');
+  await page2.click('.tab[data-id="spotify"]');
+  await page2.click('.tab-panel >> text=Connect Spotify');
+  await page2.waitForSelector('.toast.error', { timeout: 15000 }).catch(() => {});
+  const message = (await page2.locator('.toast.error').first().textContent().catch(() => '')) ?? '';
+  check('a non-Premium account gets a plain explanation', /Premium/.test(message), message.slice(0, 90));
+  await browser.close();
+}
+
+// ----------------------------------------------------------------------- main
+
+(async () => {
+  if (!fs.existsSync(TRACK)) {
+    console.error('Test audio is missing. Run: node scripts/make-test-audio.mjs');
+    process.exit(2);
+  }
+  const browser = await chromium.launch({ headless: false, args: GL_ARGS });
+  try {
+    if (only.includes('visualizers')) await visualizers(browser);
+    if (only.includes('reaction')) await reaction(browser);
+    if (only.includes('player')) await player(browser);
+  } finally {
+    await browser.close();
+  }
+  if (only.includes('capture')) await capture();
+  if (only.includes('spotify')) await spotify();
+
+  const passed = results.filter((r) => r.ok).length;
+  console.log(`\n${passed} passed, ${failures} failed`);
+  fs.mkdirSync('.verify', { recursive: true });
+  fs.writeFileSync('.verify/report.json', JSON.stringify(results, null, 2));
+  process.exit(failures ? 1 : 0);
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

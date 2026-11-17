@@ -36,7 +36,7 @@ vec3 shape(float s, float u, float v, float w) {
     float b = v * TAU;
     vec3 n = normalize(vec3(cos(t * 3.0), sin(t * 2.0), cos(t)));
     vec3 bn = normalize(cross(n, vec3(0.3, 1.0, 0.2)));
-    return c + (n * cos(b) + bn * sin(b)) * (0.10 + 0.10 * w);
+    return (c + (n * cos(b) + bn * sin(b)) * (0.10 + 0.10 * w)) * 1.15;
   } else if (s < 3.5) {                // spiral galaxy
     float rad = pow(v, 0.6) * 1.9;
     float a = u * TAU + rad * 2.4 + floor(u * 3.0) * TAU / 3.0;
@@ -185,8 +185,9 @@ export default defineVisualizer({
     gl.bindBuffer(gl.ARRAY_BUFFER, null);
 
     let read = 0;
-    let shapeA = 0;
-    let shapeB = 0;
+    // Start on the knot: it shows off depth better than a plain sphere.
+    let shapeA = 2;
+    let shapeB = 2;
     let morph = 1;
     let orbit = 0;
     const proj = new Float32Array(16);
@@ -235,7 +236,7 @@ export default defineVisualizer({
 
         // ---- draw
         orbit += dt * (0.12 + 0.5 * a.mid);
-        const dist = 4.3 - 0.35 * a.bass;
+        const dist = 3.5 - 0.3 * a.bass;
         const eye: [number, number, number] = [
           Math.sin(orbit) * dist,
           0.9 + 0.5 * Math.sin(frame.time * 0.19),

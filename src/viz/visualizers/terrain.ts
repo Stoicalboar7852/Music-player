@@ -2,7 +2,7 @@
 // The newest sound rises at your feet and rolls away toward the horizon.
 
 import { BloomScene } from '../../gl/bloom';
-import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, PALETTE } from '../../gl/glsl';
+import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, NOISE, PALETTE } from '../../gl/glsl';
 import { lookAt, multiply, perspective } from '../../gl/mat4';
 import { drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { commonUniforms, defineVisualizer, HISTORY_ROWS } from '../types';
@@ -77,7 +77,9 @@ void main() {
   float lb = abs(fract(along + 0.5) - 0.5) / max(fwidth(along), 1e-4);
   float lines = max(1.0 - min(la, 1.0), 1.0 - min(lb, 1.0));
   vec3 lineColor = pal(0.3 + h * 0.5);
-  col += lineColor * lines * (0.22 + 2.2 * h + 0.9 * uBeat * (1.0 - vGrid.y));
+  // Treble runs along the wires as a fine shimmer.
+  float shimmer = 0.5 + 0.5 * sin(vRow * 1.7 + vGrid.x * 40.0 - uTime * 9.0);
+  col += lineColor * lines * (0.22 + 2.2 * h + 0.9 * uBeat * (1.0 - vGrid.y) + 1.3 * uTreble * shimmer);
 
   // Peaks catch the treble as glints.
   col += vec3(1.0) * pow(h, 5.0) * (0.10 + 0.9 * uTreble);
@@ -95,6 +97,7 @@ in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
 uniform float uHorizon;      // screen-space y of the horizon, 0..1
 ${HASH}
+${NOISE}
 ${COLOR}
 ${PALETTE}
 
@@ -116,6 +119,14 @@ void main() {
   vec3 sun = mix(pal(0.25), pal(0.0), smoothstep(0.0, 0.26, p.y)) * (1.3 + 1.2 * uBeat);
   col += sun * disc * mix(1.0, bands, step(p.y, 0.24)) * step(0.0, p.y);
   col += glow * 0.35 * exp(-d * 5.0) * (0.6 + 0.9 * uBass);
+
+  // Aurora: curtains of light high in the sky that flare with the treble.
+  float sway = fbm(vec2(p.x * 1.6 + uTime * 0.05, uTime * 0.11));
+  float curtain = fbm(vec2(p.x * 5.0 + sway * 2.5, uTime * 0.25));
+  float band = smoothstep(0.18, 0.34, up) * smoothstep(0.75, 0.42, up + 0.25 * (sway - 0.5));
+  float rays = 0.55 + 0.45 * sin(p.x * 70.0 + sway * 30.0);
+  vec3 aurora = mix(pal(0.5), pal(0.75), curtain) * pow(curtain, 2.0) * band * rays;
+  col += aurora * (0.10 + 2.4 * uTreble + 1.6 * uTrebleHit);
 
   // Stars that twinkle with the treble.
   vec2 sg = vUv * vec2(aspect, 1.0) * 70.0;

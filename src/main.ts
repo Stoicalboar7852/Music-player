@@ -10,6 +10,7 @@ import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pick
 import { connectMediaSession } from './player/mediaSession';
 import { Player } from './player/player';
 import { SOURCE_NAMES, type Track } from './player/types';
+import { handleSpotifyCallback, SpotifyService } from './services/spotify';
 import type { MusicService } from './services/types';
 import { createDock } from './ui/dock';
 import { h, icon } from './ui/dom';
@@ -29,6 +30,10 @@ import { Renderer } from './viz/renderer';
 if (location.hostname === 'localhost') {
   location.replace(location.href.replace('//localhost', '//127.0.0.1'));
 }
+
+// If Spotify just redirected back here after sign-in, finish that first. In the
+// sign-in popup that is all this page load is for, so stop before starting the app.
+if (await handleSpotifyCallback()) await new Promise(() => {});
 
 const canvas = document.getElementById('stage') as HTMLCanvasElement;
 const root = document.getElementById('app') as HTMLElement;
@@ -52,7 +57,10 @@ try {
 const player = new Player();
 const capture = new CaptureManager(engine);
 player.register(new LocalBackend(engine));
-const services: MusicService[] = [];
+// Streaming services. Each brings its own official player as a backend; none
+// of them is needed for local files or system audio.
+const services: MusicService[] = [new SpotifyService()];
+for (const service of services) player.register(service.backend);
 
 // ------------------------------------------------------------------- shell
 

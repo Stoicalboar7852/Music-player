@@ -130,13 +130,13 @@ export default defineVisualizer({
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
         gl.bindVertexArray(vao);
-        const thickness = Math.max(1.6, height / 420) * (1 + 0.9 * a.bass + 0.8 * a.beatPulse);
+        const thickness = Math.max(2, height / 330) * (1 + 0.9 * a.bass + 0.8 * a.beatPulse);
         beam.use().set({
           uWave: UNIT_WAVE,
           uRes: [width, height],
-          uGain: 0.3 + 0.1 * a.level,
+          uGain: 0.34 + 0.1 * a.level,
           uWidth: thickness,
-          uPower: 1.25 + 1.2 * a.beatPulse + 0.5 * a.trebleHit,
+          uPower: 1.5 + 1.2 * a.beatPulse + 0.5 * a.trebleHit,
         });
         beam.set({ uChannel: 1, uOffset: 0.46 });
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, WAVE_SIZE * 2);

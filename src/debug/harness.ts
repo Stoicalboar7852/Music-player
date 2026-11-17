@@ -50,6 +50,17 @@ export function createHarness(renderer: Renderer) {
         beats: active.audio.beatCount,
       };
     },
+    /**
+     * Isolates the beat response: the same kick-drum audio rendered twice,
+     * once normally and once with beat detection withheld from the visualizer.
+     */
+    async beatReaction(id: string, frames = 150): Promise<{ difference: number; beats: number }> {
+      const run = (suppressBeats: boolean) =>
+        renderer.offlineRun(id, (t, rate, l, r) => fillStimulus('bass', t, rate, l, r), { frames, suppressBeats });
+      const without = await run(true);
+      const withBeats = await run(false);
+      return { difference: meanAbsDiff(without.final, withBeats.final), beats: withBeats.audio.beatCount };
+    },
     /** Band energies the analysis layer reports for a stimulus, to check it isolates what it claims. */
     async analyse(stimulus: Stimulus, frames = 150) {
       const id = renderer.defs[0].id;

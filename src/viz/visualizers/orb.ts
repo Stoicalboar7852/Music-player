@@ -28,11 +28,12 @@ float surfaceRadius(vec3 n) {
   // Each patch of skin listens to its own frequency band and bulges with it,
   // so the surface behaves like ferrofluid rather than a striped ball.
   float region = vnoise3(n * 2.3 + vec3(0.0, t * 0.06, 0.0));
-  float bx = 0.02 + region * 0.92;
-  float band = (spectrum(bx - 0.035) + spectrum(bx) + spectrum(bx + 0.035)) / 3.0;   // soften band edges
+  float bx = 0.04 + region * 0.88;
+  // A wide blur across neighbouring bands keeps the surface smooth instead of terraced.
+  float band = (spectrum(bx - 0.08) + spectrum(bx - 0.04) + spectrum(bx) + spectrum(bx + 0.04) + spectrum(bx + 0.08)) * 0.2;
   // Fine grain, driven by treble.
   float grain = vnoise3(n * 8.0 + vec3(0.0, t * 0.9, 0.0)) - 0.5;
-  return 1.0 + uSwell + lobes * (0.05 + 0.2 * uBass) + band * band * 0.17 + grain * (0.01 + 0.1 * uTreble);
+  return 1.0 + uSwell + lobes * (0.05 + 0.2 * uBass) + band * band * 0.24 + grain * (0.01 + 0.1 * uTreble);
 }
 
 float map(vec3 p) {

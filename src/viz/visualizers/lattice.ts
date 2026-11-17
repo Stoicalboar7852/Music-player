@@ -69,7 +69,7 @@ void main() {
     float stepLen = min(c.box, c.exit);
     // Haze of light around each cube, brighter for louder bands.
     float wave = exp(-abs(pos.z - waveZ) * 0.9) * uBeat;
-    glow += pal(c.id * 0.9) * exp(-max(c.box, 0.0) * 6.5) * (0.006 + 0.07 * c.level * c.level + 0.10 * wave) * min(stepLen, 0.35) * exp(-t * 0.09);
+    glow += pal(c.id * 0.9) * exp(-max(c.box, 0.0) * 6.5) * (0.006 + 0.07 * c.level * c.level + 0.10 * wave + 0.05 * uTreble) * min(stepLen, 0.35) * exp(-t * 0.09);
     t += stepLen;
     if (t > 26.0) break;
   }
@@ -92,7 +92,10 @@ void main() {
     // Inner panel lit by this cube's band; edges are neon.
     float panel = smoothstep(0.75, 0.55, second);
     surf += tint * panel * (0.03 + 0.75 * c.level * c.level);
-    surf += tint * edge * (0.4 + 1.7 * c.level + 1.8 * wave + 0.6 * uTreble * step(0.7, c.id));
+    // Treble sets random cubes' edges sparking.
+    float twinkle = step(0.55, hash21(vec2(c.id * 91.0, floor(uTime * 14.0))));
+    surf += tint * edge * (0.4 + 1.7 * c.level + 1.8 * wave);
+    surf += mix(tint, vec3(1.0), 0.6) * edge * twinkle * (2.2 * uTreble + 1.6 * uTrebleHit);
     surf += vec3(1.0) * edge * pow(c.level, 4.0) * 0.6;
 
     float fog = exp(-t * 0.15);
