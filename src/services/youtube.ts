@@ -154,7 +154,7 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   readonly limits = [
     'Paste any YouTube or YouTube Music video or playlist link; nothing needs setting up. To queue a YouTube Music album, use Share on the album page, which gives a playlist link.',
     'There is no sign-in: YouTube has no official API for a YouTube Music library, likes or uploads, so those cannot be browsed here. Public and unlisted playlists work by link.',
-    'Searching needs a free YouTube Data API key (Settings). Each search costs 100 of the key\'s 10,000 daily quota units, so about 100 searches a day.',
+    'Searching needs a free YouTube Data API key (Settings). Each search makes two search requests (videos and playlists) at 100 quota units each, so the default 10,000 daily units allow about 50 searches a day. Pasting links costs at most a few units.',
     'Some videos, often official music videos from labels, are blocked from playing outside YouTube by their owner. Those are skipped with a message.',
     "YouTube's terms require the player to stay visible while it plays, so a small video frame stays in the corner, even in fullscreen.",
     "The embedded player runs on YouTube's own origin and its audio cannot be read. The visualizers react to this tab's shared audio instead.",

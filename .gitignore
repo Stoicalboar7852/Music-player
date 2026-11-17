@@ -4,3 +4,6 @@ dist
 .DS_Store
 /test-results
 /.verify
+# Apple MusicKit private keys must never be committed
+AuthKey_*.p8
+*.p8
