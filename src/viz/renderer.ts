@@ -300,8 +300,11 @@ export class Renderer {
 
   // ------------------------------------------------------- artwork + palette
 
-  /** Uploads cover art for visualizers and derives the colour palette from it. */
-  setArtwork(image: HTMLImageElement | ImageBitmap | HTMLCanvasElement | null) {
+  /**
+   * Uploads cover art for visualizers and derives the colour palette from it.
+   * Returns that palette, or null when there is no usable artwork.
+   */
+  setArtwork(image: HTMLImageElement | ImageBitmap | HTMLCanvasElement | null): RGB[] | null {
     const gl = this.gl;
     if (this.artworkTex) {
       gl.deleteTexture(this.artworkTex);
@@ -310,7 +313,7 @@ export class Renderer {
     this.artworkVersion++;
     if (!image) {
       this.setPalette(null);
-      return;
+      return null;
     }
     try {
       // Covers can be thousands of pixels wide; 768 is plenty and keeps mipmapping cheap.
@@ -334,12 +337,15 @@ export class Renderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this.artworkTex = tex;
-      this.setPalette(paletteFromImage(square));
+      const palette = paletteFromImage(square);
+      this.setPalette(palette);
+      return palette;
     } catch (error) {
       // Tainted (cross-origin, no CORS) images cannot be uploaded.
       console.warn('Artwork could not be used by the visualizers', error);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       this.setPalette(null);
+      return null;
     }
   }
 
