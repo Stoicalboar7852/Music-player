@@ -115,7 +115,9 @@ export class Renderer {
   private lastTime = 0;
   private time = 0;
   private running = false;
-  private random = mulberry32(0x9e3779b9);
+  // Live use gets a fresh seed each session (so MilkDrop opens on a different preset);
+  // offlineRun() reseeds explicitly, so test renders stay deterministic.
+  private random = mulberry32((Math.random() * 2 ** 32) >>> 0);
 
   private quality: Quality = 'auto';
   private scale = 1;
