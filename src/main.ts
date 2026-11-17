@@ -10,6 +10,7 @@ import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pick
 import { connectMediaSession } from './player/mediaSession';
 import { Player } from './player/player';
 import { SOURCE_NAMES, type Track } from './player/types';
+import { AppleMusicService } from './services/apple';
 import { handleSpotifyCallback, SpotifyService } from './services/spotify';
 import type { MusicService } from './services/types';
 import { createDock } from './ui/dock';
@@ -59,7 +60,7 @@ const capture = new CaptureManager(engine);
 player.register(new LocalBackend(engine));
 // Streaming services. Each brings its own official player as a backend; none
 // of them is needed for local files or system audio.
-const services: MusicService[] = [new SpotifyService()];
+const services: MusicService[] = [new SpotifyService(), new AppleMusicService()];
 for (const service of services) player.register(service.backend);
 
 // ------------------------------------------------------------------- shell

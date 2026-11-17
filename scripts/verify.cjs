@@ -17,6 +17,7 @@
 //   capture      real getDisplayMedia capture of another tab and of this tab
 //   spotify      the Spotify integration against a local simulation of
 //                Spotify (see scripts/mocks): sign-in, search, playback, queue
+//   apple        the Apple Music integration against a local simulation of MusicKit
 //
 // Needs Playwright (`npm i -D playwright && npx playwright install chromium`)
 // and ffmpeg on PATH for thumbnails. The browser runs headed because tab
@@ -32,7 +33,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'visualizers,reaction,player,capture,spotify').split(',');
+const only = arg('only', 'visualizers,reaction,player,capture,spotify,apple').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -670,6 +671,135 @@ async function spotify() {
   await browser.close();
 }
 
+
+// ---------------------------------------------------------------- apple music
+
+async function apple() {
+  console.log('\n== Apple Music (against the local simulation in scripts/mocks/apple.cjs) ==');
+  const { installAppleMock, mockDeveloperToken } = require('./mocks/apple.cjs');
+  const browser = await chromium.launch({ headless: false, args: [...GL_ARGS, '--auto-accept-this-tab-capture'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 810 } });
+  await installAppleMock(context);
+  const page = await open(context);
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+  const svc = () => page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'apple').status());
+  const setToken = (token) => page.evaluate((t) => window.__phosphor.settings.set({ appleDeveloperToken: t }), token);
+  const toastText = async () => ((await page.locator('.toast.error').last().textContent().catch(() => '')) ?? '');
+
+  // ---- token handling
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="apple"]');
+  check('without a developer token the panel says setup is needed', await page.isVisible('.tab-panel >> text=needs credentials'));
+  await setToken('not-a-token');
+  check('a malformed token is explained before anything is sent to Apple', /not a developer token/.test((await svc()).problem ?? ''), (await svc()).problem);
+  await setToken(mockDeveloperToken({ expired: true }));
+  check('an expired token is called out with its expiry date', /expired on/.test((await svc()).problem ?? ''), (await svc()).problem);
+  await setToken(mockDeveloperToken({ signed: false }));
+  await page.click('.tab-panel >> text=Connect Apple Music');
+  await page.waitForSelector('.toast.error');
+  check('a token Apple rejects produces a clear message', /rejected the developer token/.test(await toastText()), (await toastText()).slice(0, 90));
+  check('the SDK was configured with the app name and the pasted token', await page.evaluate(() => window.__fakeAppleLog.config?.app?.name === 'Phosphor'));
+
+  // ---- sign in (a fresh page: MusicKit is configured once per load)
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor);
+  await page.evaluate(() => window.__phosphor.renderer.setVisualizer('bars', { immediate: true }));
+  await setToken(mockDeveloperToken());
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="apple"]');
+  await page.click('.tab-panel >> text=Connect Apple Music');
+  await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'apple').status().connected, null, { timeout: 10000 }).catch(() => {});
+  check('with a good token, sign-in connects', (await svc()).connected, JSON.stringify(await svc()));
+
+  // ---- search and play
+  await page.fill('input[type=search]', 'understudies');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.results .row');
+  const rows = await page.locator('.results .row').count();
+  check('search lists songs, albums and playlists, hiding songs that cannot be played', rows === 6, `${rows} rows`);
+  await page.waitForFunction(() => [...document.querySelectorAll('.results .thumb img')].some((img) => img.naturalWidth > 0), null, { timeout: 5000 }).catch(() => {});
+  await page.screenshot({ path: path.join(SHOTS, 'ui-apple.png') });
+  await page.click('.results .row:nth-child(2) [title="Play now"]');
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 10000 }).catch(() => {});
+  let s = await state(page);
+  const current = await page.evaluate(() => window.__phosphor.player.current);
+  check('an Apple Music song plays through MusicKit', s.playing && current?.source === 'apple' && (await page.evaluate(() => window.__fakeAppleLog.queue.at(-1)?.song)) === '2001');
+  check('title, artist, duration and sized artwork come from Apple', current.title === 'Stand-In Track 1' && current.artist === 'The Understudies' && Math.abs(s.duration - 40.67) < 0.5 && /600x600/.test(current.artworkUrl));
+  check("Apple's own autoplay is turned off so the shared queue stays in charge", await page.evaluate(() => window.__fakeApple.autoplayEnabled === false));
+  await page.keyboard.press('Escape');
+
+  // ---- visuals through tab sharing
+  await page.waitForTimeout(800);
+  check('protected audio does not reach the analysers by itself', (await state(page)).level < 0.01);
+  await page.click(".banner >> text=Share this tab's audio");
+  await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  s = await state(page);
+  check("after sharing, Apple Music's audio drives the visualizers", s.input === 'capture' && s.level > 0.05, `level ${s.level.toFixed(2)}`);
+
+  // ---- transport
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
+  check('pause reaches MusicKit', (await page.evaluate(() => window.__fakeApple.audio.paused)) && !(await state(page)).playing);
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
+  check('resume reaches MusicKit', !(await page.evaluate(() => window.__fakeApple.audio.paused)) && (await state(page)).playing);
+  await page.evaluate(() => void window.__phosphor.player.seek(20));
+  await page.waitForTimeout(600);
+  check('seeking moves MusicKit and the seek bar agrees', Math.abs((await state(page)).position - 20.6) < 0.8, `position ${(await state(page)).position.toFixed(1)}`);
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.3));
+  check('volume is applied to MusicKit', Math.abs((await page.evaluate(() => window.__fakeApple.volume)) - 0.3) < 0.01);
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.8));
+
+  // ---- albums, playlists, library, links
+  const data = await page.evaluate(async () => {
+    const { app, player } = window.__phosphor;
+    const service = app.services.find((s) => s.id === 'apple');
+    const found = await service.search('x');
+    const album = await service.tracksOf(found.collections.find((c) => c.kind === 'album'));
+    const playlist = await service.tracksOf(found.collections.find((c) => c.kind === 'playlist'));
+    const library = await service.library();
+    const libraryTracks = await service.tracksOf(library[0]);
+    const links = {
+      songInAlbum: (await service.resolveLink('https://music.apple.com/gb/album/dress-rehearsal/1001?i=2003'))?.tracks[0]?.title,
+      song: (await service.resolveLink('https://music.apple.com/us/song/stand-in-track-5/2005'))?.tracks[0]?.title,
+      album: (await service.resolveLink('https://music.apple.com/us/album/dress-rehearsal/1001'))?.collections[0]?.title,
+      playlist: (await service.resolveLink('https://music.apple.com/us/playlist/understudy-essentials/pl.mock1'))?.collections[0]?.title,
+      other: await service.resolveLink('https://open.spotify.com/track/abc'),
+    };
+    player.add(album);
+    return { album: album.map((t) => t.title), playlist: playlist.map((t) => t.title), library: library.map((c) => c.title), libraryTracks: libraryTracks.map((t) => [t.title, t.ref]), links };
+  });
+  check('album tracks load across pages', data.album.length === 4, data.album.join(', '));
+  check('playlist tracks load, skipping unavailable songs', data.playlist.join() === 'Stand-In Track 5,Stand-In Track 6', data.playlist.join());
+  check('library playlists and their songs load', data.library.join() === 'My Library Mix' && data.libraryTracks[0]?.[1] === 'i.aaa', JSON.stringify(data.libraryTracks));
+  check('pasted song, album and playlist links resolve (honouring the storefront in the link)', data.links.songInAlbum === 'Stand-In Track 3' && data.links.song === 'Stand-In Track 5' && data.links.album === 'Dress Rehearsal' && data.links.playlist === 'Understudy Essentials', JSON.stringify(data.links));
+  check('links to other services are refused', data.links.other === null);
+
+  // ---- end of track -> next
+  await page.evaluate(() => void window.__phosphor.player.seek(window.__phosphor.player.duration - 1.2));
+  await page.waitForFunction(() => window.__phosphor.player.currentIndex === 1 && window.__phosphor.player.position > 0.3, null, { timeout: 10000 }).catch(() => {});
+  s = await state(page);
+  check('when an Apple Music song ends the queue advances', s.index === 1 && s.playing, `index ${s.index}`);
+
+  // ---- sign out
+  await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'apple').disconnect());
+  await page.waitForTimeout(300);
+  check('disconnect signs out and stops playback', !(await svc()).connected && (await page.evaluate(() => window.__fakeApple.audio.paused)));
+
+  // ---- declining Apple's sign-in window
+  await page.evaluate(() => (window.__fakeAppleDecline = true));
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="apple"]');
+  await page.click('.tab-panel >> text=Connect Apple Music');
+  await page.waitForTimeout(800);
+  check('cancelling the Apple sign-in is reported, not swallowed', /sign-in did not complete/.test(await toastText()), (await toastText()).slice(0, 90));
+  await browser.close();
+}
+
 // ----------------------------------------------------------------------- main
 
 (async () => {
@@ -687,6 +817,7 @@ async function spotify() {
   }
   if (only.includes('capture')) await capture();
   if (only.includes('spotify')) await spotify();
+  if (only.includes('apple')) await apple();
 
   const passed = results.filter((r) => r.ok).length;
   console.log(`\n${passed} passed, ${failures} failed`);
