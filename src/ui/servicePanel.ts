@@ -129,8 +129,8 @@ export function createServicePanel(app: App, service: MusicService): HTMLElement
         h(
           'div',
           { class: 'note ok', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px' },
-          h('span', null, 'Connected', status.account ? h('span', null, ' as ', h('strong', { text: status.account })) : null),
-          h('button', { class: 'btn small', type: 'button', onClick: () => service.disconnect() }, 'Disconnect'),
+          h('span', null, status.label ?? 'Connected', status.account ? h('span', null, ' as ', h('strong', { text: status.account })) : null),
+          service.signIn === false ? null : h('button', { class: 'btn small', type: 'button', onClick: () => service.disconnect() }, 'Disconnect'),
         ),
       );
       if (status.problem) head.append(h('p', { class: 'note warn', text: status.problem }));

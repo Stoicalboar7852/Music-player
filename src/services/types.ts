@@ -13,6 +13,8 @@ export interface ServiceStatus {
   account?: string;
   /** A problem worth showing (expired token, wrong account type, ...). */
   problem?: string;
+  /** Replaces "Connected" in the panel, for services without a sign-in. */
+  label?: string;
 }
 
 export interface SearchResults {
@@ -28,6 +30,8 @@ export interface MusicService {
   readonly limits: string[];
   /** What the paste-a-link box accepts, e.g. "Spotify track, album or playlist link". */
   readonly linkHint: string;
+  /** False for services that work without signing in (no Disconnect button). */
+  readonly signIn?: boolean;
 
   status(): ServiceStatus;
   onStatus(listener: () => void): () => void;

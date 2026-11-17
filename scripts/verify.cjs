@@ -18,6 +18,8 @@
 //   spotify      the Spotify integration against a local simulation of
 //                Spotify (see scripts/mocks): sign-in, search, playback, queue
 //   apple        the Apple Music integration against a local simulation of MusicKit
+//   youtube      the YouTube integration against a local simulation of the
+//                IFrame Player API and Data API
 //
 // Needs Playwright (`npm i -D playwright && npx playwright install chromium`)
 // and ffmpeg on PATH for thumbnails. The browser runs headed because tab
@@ -33,7 +35,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'visualizers,reaction,player,capture,spotify,apple').split(',');
+const only = arg('only', 'visualizers,reaction,player,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -800,6 +802,154 @@ async function apple() {
   await browser.close();
 }
 
+
+// -------------------------------------------------------------------- youtube
+
+async function youtube() {
+  console.log('\n== YouTube (against the local simulation in scripts/mocks/youtube.cjs) ==');
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  const browser = await chromium.launch({ headless: false, args: [...GL_ARGS, '--auto-accept-this-tab-capture'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 810 } });
+  const mock = await installYouTubeMock(context);
+  const page = await open(context);
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low', youtubeApiKey: '' });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+  const yt = (fn, arg) => page.evaluate(([fn, arg]) => new Function('service', 'arg', `return (${fn})(service, arg)`)(window.__phosphor.app.services.find((s) => s.id === 'youtube'), arg), [fn.toString(), arg]);
+  const toastText = async () => ((await page.locator('.toast.error').last().textContent().catch(() => '')) ?? '');
+
+  // ---- no setup needed
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="youtube"]');
+  check('works with no credentials: the panel is ready for links', await page.isVisible('.tab-panel >> text=Ready: paste links'));
+  check('without an API key, search explains what it needs instead of failing', await page.isVisible('.tab-panel >> text=Search needs a YouTube Data API key'));
+
+  // ---- link parsing
+  const links = await yt(async (service) => {
+    const r = async (u) => {
+      try {
+        const x = await service.resolveLink(u);
+        return x ? [...x.tracks.map((t) => `v:${t.ref}`), ...x.collections.map((c) => `l:${c.id}:${c.subtitle}`)].join(' ') : null;
+      } catch (e) {
+        return `error:${e.message.slice(0, 40)}`;
+      }
+    };
+    return {
+      watch: await r('https://www.youtube.com/watch?v=aaaaaaaaaaa&t=42s'),
+      short: await r('https://youtu.be/bbbbbbbbbbb?si=xyz'),
+      shorts: await r('https://youtube.com/shorts/ccccccccccc'),
+      music: await r('https://music.youtube.com/watch?v=aaaaaaaaaaa&list=OLAK5uy_mockalbum'),
+      album: await r('https://music.youtube.com/playlist?list=OLAK5uy_mockalbum'),
+      browse: await r('https://music.youtube.com/browse/MPREb_abc'),
+      other: await r('https://open.spotify.com/track/x'),
+    };
+  });
+  check('watch, youtu.be and shorts links resolve to the video', links.watch === 'v:aaaaaaaaaaa' && links.short === 'v:bbbbbbbbbbb' && links.shorts === 'v:ccccccccccc', JSON.stringify([links.watch, links.short, links.shorts]));
+  check('YouTube Music links give both the song and its album playlist', links.music === 'v:aaaaaaaaaaa l:OLAK5uy_mockalbum:YouTube Music album' && links.album === 'l:OLAK5uy_mockalbum:YouTube Music album', links.music);
+  check('album/artist "browse" pages get an explanation of what to paste instead', /^error:That is a YouTube Music album/.test(links.browse ?? ''), links.browse);
+  check('links to other services are refused', links.other === null);
+
+  // ---- paste a link through the UI and play it
+  await page.fill('input[type=url]', 'https://music.youtube.com/watch?v=aaaaaaaaaaa');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.results .row');
+  await page.click('.results .row >> nth=0 >> [title="Play now"]');
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 10000 }).catch(() => {});
+  let s = await state(page);
+  const current = await page.evaluate(() => window.__phosphor.player.current);
+  check('a pasted video plays in the YouTube player', s.playing && current?.source === 'youtube');
+  check('without a key, the title and artist fill in from the player once it loads ("- Topic" removed)', current.title === 'Mock Clip A' && current.artist === 'Clip Makers', `${current.title} / ${current.artist}`);
+  check('the video thumbnail is used as artwork', /i\.ytimg\.com\/vi\/aaaaaaaaaaa/.test(current.artworkUrl ?? ''));
+  await page.keyboard.press('Escape');
+  const box = await page.locator('.yt-frame').boundingBox();
+  check('the YouTube player is visible and at least 200x200, as YouTube requires', Boolean(box && box.width >= 200 && box.height >= 200), box ? `${box.width}x${box.height}` : 'hidden');
+
+  // ---- visuals through tab sharing
+  await page.waitForTimeout(600);
+  check('the embedded player is inaudible to the analysers by itself', (await state(page)).level < 0.01);
+  await page.click(".banner >> text=Share this tab's audio");
+  await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+  s = await state(page);
+  check("after sharing, YouTube's audio drives the visualizers", s.input === 'capture' && s.level > 0.05, `level ${s.level.toFixed(2)}`);
+  await page.screenshot({ path: path.join(SHOTS, 'ui-youtube.png') });
+
+  // ---- transport
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
+  check('pause reaches the YouTube player', (await page.evaluate(() => window.__fakeYouTube.audio.paused)) && !(await state(page)).playing);
+  await page.keyboard.press('Space');
+  await page.waitForTimeout(500);
+  check('resume reaches the YouTube player', !(await page.evaluate(() => window.__fakeYouTube.audio.paused)) && (await state(page)).playing);
+  await page.evaluate(() => void window.__phosphor.player.seek(20));
+  await page.waitForTimeout(500);
+  check('seeking moves the YouTube player', Math.abs((await state(page)).position - 20.4) < 0.8, (await state(page)).position.toFixed(1));
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.3));
+  check('volume is applied to the YouTube player (0-100 scale)', (await page.evaluate(() => window.__fakeYouTube.volume)) === 30);
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.8));
+
+  // ---- the player stays visible when the interface fades
+  await page.evaluate(() => window.__phosphor.settings.set({ autoHide: 'always' }));
+  await page.mouse.move(700, 300);
+  await page.waitForTimeout(4200);
+  const idleBox = await page.locator('.yt-frame').boundingBox();
+  check('when the interface fades, the YouTube player stays on screen', (await state(page)).idle && Boolean(idleBox && idleBox.width >= 200 && (await page.isVisible('.yt-frame'))));
+  await page.mouse.move(720, 320);
+  await page.evaluate(() => window.__phosphor.settings.set({ autoHide: 'fullscreen' }));
+
+  // ---- a playlist without a key, a blocked video, end of track
+  const expanded = await yt(async (service) => {
+    const found = await service.resolveLink('https://music.youtube.com/playlist?list=OLAK5uy_mockalbum');
+    const tracks = await service.tracksOf(found.collections[0]);
+    return tracks.map((t) => t.ref);
+  });
+  check('without a key, a playlist is expanded by the player itself', expanded.join() === 'aaaaaaaaaaa,bbbbbbbbbbb,ccccccccccc', expanded.join());
+  await page.evaluate(() => {
+    const { player, app } = window.__phosphor;
+    const service = app.services.find((s) => s.id === 'youtube');
+    player.add([service['videoTrack']('ddddddddddd'), service['videoTrack']('bbbbbbbbbbb')]);
+    void player.playTrack(player.queue[1].id);
+  });
+  await page.waitForFunction(() => window.__phosphor.player.current?.ref === 'bbbbbbbbbbb' && window.__phosphor.player.playing, null, { timeout: 10000 }).catch(() => {});
+  check('a video whose owner blocks embedding is explained and skipped', /outside YouTube/.test(await toastText()) && (await page.evaluate(() => window.__phosphor.player.current?.ref)) === 'bbbbbbbbbbb', (await toastText()).slice(0, 80));
+  await page.evaluate(() => {
+    const { player, app } = window.__phosphor;
+    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('ccccccccccc')]);
+    void player.seek(player.duration - 1.2);
+  });
+  await page.waitForFunction(() => window.__phosphor.player.current?.ref === 'ccccccccccc' && window.__phosphor.player.position > 0.3, null, { timeout: 10000 }).catch(() => {});
+  check('when a video ends the queue advances', (await page.evaluate(() => window.__phosphor.player.current?.ref)) === 'ccccccccccc');
+
+  // ---- with an API key
+  await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'mock-api-key' }));
+  const searched = await yt(async (service) => {
+    const r = await service.search('clips');
+    const list = await service.tracksOf(r.collections[0]);
+    return { tracks: r.tracks.map((t) => [t.title, t.artist, t.duration]), playlists: r.collections.map((c) => c.title), list: list.map((t) => t.title) };
+  });
+  check('with a key, search finds music videos with titles, artists and durations', searched.tracks.length === 3 && searched.tracks[0][0] === 'Mock Clip A' && searched.tracks[0][1] === 'Clip Makers' && searched.tracks[0][2] === 40, JSON.stringify(searched.tracks[0]));
+  check('search is limited to the Music category', mock.log.data.some((d) => d.endpoint === 'search' && d.videoCategoryId === '10'));
+  check('escaped playlist titles are decoded', searched.playlists[0] === 'Rock & Roll Mix', searched.playlists[0]);
+  check('with a key, playlist tracks are fetched across pages with their names', searched.list.join() === 'Mock Clip C,Mock Clip A', searched.list.join());
+  await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'exhausted-key' }));
+  const quota = await yt((service) => service.search('x').then(() => 'ok', (e) => e.message));
+  check('an exhausted daily quota is explained plainly', /quota is used up/.test(quota), quota);
+  await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'wrong' }));
+  const bad = await yt((service) => service.search('x').then(() => 'ok', (e) => e.message));
+  check('a wrong key is reported as such', /rejected the API key/.test(bad), bad);
+
+  // ---- leaving YouTube hides the player
+  await page.setInputFiles('#file-input', TRACK);
+  await page.evaluate(() => {
+    const { player } = window.__phosphor;
+    void player.playTrack(player.queue[player.queue.length - 1].id);
+  });
+  await page.waitForTimeout(1500);
+  check('playing a local file stops YouTube and hides its frame', (await page.evaluate(() => window.__fakeYouTube.audio.paused)) && !(await page.isVisible('.yt-frame')));
+  await browser.close();
+}
+
 // ----------------------------------------------------------------------- main
 
 (async () => {
@@ -818,6 +968,7 @@ async function apple() {
   if (only.includes('capture')) await capture();
   if (only.includes('spotify')) await spotify();
   if (only.includes('apple')) await apple();
+  if (only.includes('youtube')) await youtube();
 
   const passed = results.filter((r) => r.ok).length;
   console.log(`\n${passed} passed, ${failures} failed`);

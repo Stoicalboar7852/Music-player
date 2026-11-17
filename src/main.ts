@@ -12,6 +12,7 @@ import { Player } from './player/player';
 import { SOURCE_NAMES, type Track } from './player/types';
 import { AppleMusicService } from './services/apple';
 import { handleSpotifyCallback, SpotifyService } from './services/spotify';
+import { YouTubeService } from './services/youtube';
 import type { MusicService } from './services/types';
 import { createDock } from './ui/dock';
 import { h, icon } from './ui/dom';
@@ -60,7 +61,7 @@ const capture = new CaptureManager(engine);
 player.register(new LocalBackend(engine));
 // Streaming services. Each brings its own official player as a backend; none
 // of them is needed for local files or system audio.
-const services: MusicService[] = [new SpotifyService(), new AppleMusicService()];
+const services: MusicService[] = [new SpotifyService(), new AppleMusicService(), new YouTubeService()];
 for (const service of services) player.register(service.backend);
 
 // ------------------------------------------------------------------- shell
