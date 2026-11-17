@@ -15,7 +15,8 @@ export function createToasts() {
       const toast = h('div', { class: `toast ${kind}`, text: message });
       el.append(toast);
       while (el.children.length > 4) el.firstElementChild?.remove();
-      const life = kind === 'error' ? 7000 : 3200;
+      // Long messages (instructions) stay up long enough to read.
+      const life = Math.max(kind === 'error' ? 7000 : 3200, message.length * 70);
       setTimeout(() => {
         toast.classList.add('leaving');
         setTimeout(() => toast.remove(), 320);

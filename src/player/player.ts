@@ -177,6 +177,14 @@ export class Player extends Emitter<PlayerEvents> {
     } catch (error) {
       if (token !== this.loadToken) return;
       this.loading = false;
+      if ((error as DOMException)?.name === 'NotAllowedError') {
+        // The browser wants a click before it makes sound. The track is fine:
+        // leave it loaded and paused rather than skipping it.
+        this.playing = false;
+        this.emit('change', undefined);
+        this.emit('error', 'Your browser blocked the sound until you click. Press play to start.');
+        return;
+      }
       this.onError(error instanceof Error ? error.message : String(error));
     }
   }

@@ -150,6 +150,14 @@ What the share dialog can capture depends on your OS (the app shows the right ad
 
 Sharing a single *window* never includes sound. **Audio input device** listens to any input (a loopback device, a monitor source, a mixer, or a microphone near the speakers) as an alternative.
 
+On a Mac, the first system-audio share makes macOS ask whether Chrome may record the screen and system audio. If you declined, or the capture starts but hears nothing, open **System Settings → Privacy & Security → Screen & System Audio Recording**, switch Chrome on, then quit Chrome completely (Cmd+Q) and reopen it. The app warns you if a capture stays silent for about eight seconds.
+
+## Troubleshooting
+
+- **The visuals move but there's no sound.** Use Chrome or Edge. Safari and Firefox block sound more strictly, and can't capture audio at all. The app now unlocks sound on your first click or key press and tells you if the browser is still holding it back; clicking anywhere on the page fixes that. Also check the volume slider and the mute key (<kbd>M</kbd>).
+- **System audio on a Mac picks up nothing.** See the macOS permission note above. "Also share system audio" only appears on macOS 14.2+ with Chrome or Edge 141+; on older versions, share the Chrome tab that is playing instead.
+- **"Also share … audio" was off.** Share again and switch it on; the app explains what was missing when a share arrives without sound.
+
 ## Streaming services
 
 Spotify, Apple Music and YouTube all play through their **official** web players. None of them lets a web page read the audio: Spotify and Apple Music stream it with DRM, and YouTube plays inside its own cross-origin iframe. So the design is:

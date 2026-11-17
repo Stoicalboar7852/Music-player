@@ -2,6 +2,7 @@
 // whole system, or (for DRM-protected streaming services) this tab's own
 // output. The captured stream feeds the analysers only; it is never played.
 
+import { detectBrowser } from '../app/browser';
 import { Emitter } from '../app/emitter';
 import type { AudioEngine } from './engine';
 
@@ -65,10 +66,11 @@ export function captureAdvice(platform = detectPlatform()): CaptureAdvice {
     case 'mac':
       return {
         steps: [
-          'For one browser tab (works on every Mac): choose "Chrome tab", pick the tab, and switch on "Also share tab audio".',
-          'For everything your Mac is playing: choose "Entire screen" and switch on "Also share system audio". This needs macOS 14.2 or later and a recent Chrome or Edge (about version 141 onward); if the switch is missing, your versions do not support it.',
+          'For one browser tab (works on every Mac): choose the "Chrome tab" section, pick the tab that is playing, and make sure "Also share tab audio" is switched on.',
+          'For everything your Mac is playing (the Music app, Spotify, anything): choose "Entire screen", pick the screen, and switch on "Also share system audio". This needs macOS 14.2 or later and Chrome or Edge 141 or later. If that switch is not in the dialog, your versions can\'t do it.',
+          'The first time, macOS asks to let Chrome record the screen and system audio. If you said no, or nothing is picked up: open System Settings → Privacy & Security → Screen & System Audio Recording, switch Chrome on, then quit Chrome completely (Cmd+Q) and reopen it.',
         ],
-        note: 'On older macOS or browser versions, install a loopback device such as BlackHole and use "Audio input device" below instead.',
+        note: 'On older macOS or browser versions, install a free loopback device such as BlackHole, send your Mac\'s output to it, and use "Audio input device" below instead.',
       };
     case 'linux':
       return {
@@ -108,8 +110,9 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
     super();
   }
 
+  /** Screen-share audio capture is only implemented in Chromium browsers. */
   get supported(): boolean {
-    return typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+    return typeof navigator.mediaDevices?.getDisplayMedia === 'function' && detectBrowser().kind === 'chromium';
   }
 
   /**
@@ -119,7 +122,13 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
    */
   async startDisplay(opts: { thisTab?: boolean } = {}): Promise<void> {
     if (!this.supported) {
-      throw new CaptureError('unsupported', 'This browser cannot capture audio. Use Chrome or Edge on a desktop computer.');
+      const { kind, name } = detectBrowser();
+      throw new CaptureError(
+        'unsupported',
+        kind === 'chromium'
+          ? 'This browser cannot capture audio. Use Chrome or Edge on a desktop computer.'
+          : `${name} can't capture system or tab audio (only Chrome and Edge can). Open this page in Chrome or Edge, or use "Audio input device" with a loopback device.`,
+      );
     }
     const Controller = (window as unknown as { CaptureController?: new () => { setFocusBehavior(b: string): void } })
       .CaptureController;
@@ -169,11 +178,16 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
     const surface = (video?.getSettings() as MediaTrackSettings & { displaySurface?: string })?.displaySurface;
     if (!audio) {
       stream.getTracks().forEach((t) => t.stop());
-      const what = surface === 'window' ? 'A window was shared, and windows do not carry sound.' : 'Nothing was shared with audio.';
-      throw new CaptureError(
-        'no-audio',
-        `${what} Try again and switch on "Also share ${surface === 'monitor' ? 'system' : 'tab'} audio" in the dialog.`,
-      );
+      let message: string;
+      if (surface === 'window') {
+        message = 'A window was shared, and windows do not carry sound. Share a Chrome tab or the entire screen instead.';
+      } else if (surface === 'monitor' && detectPlatform() === 'mac') {
+        message =
+          'The screen was shared without sound. On a Mac, "Also share system audio" only appears on macOS 14.2+ with Chrome or Edge 141+. If you saw the switch, try again with it on; otherwise share the Chrome tab that is playing (with "Also share tab audio" on).';
+      } else {
+        message = `Nothing was shared with audio. Try again and switch on "Also share ${surface === 'monitor' ? 'system' : 'tab'} audio" in the dialog.`;
+      }
+      throw new CaptureError('no-audio', message);
     }
 
     const label =
@@ -184,9 +198,11 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
           : opts.thisTab
             ? "This tab's audio"
             : 'Tab audio';
-    // The picture is of no use here; keeping only the audio track saves the capture cost.
-    video?.stop();
-    this.adopt(new MediaStream([audio]), 'display', label);
+    // The picture is of no use here, but on macOS stopping the video track can
+    // end the system-audio capture with it. Keep it running, disabled, at the
+    // low size and frame rate requested above.
+    if (video) video.enabled = false;
+    this.adopt(stream, 'display', label);
   }
 
   /** Audio input devices, for loopback/monitor sources. Labels need mic permission to appear. */
@@ -221,9 +237,11 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
     this.stop();
     this.stream = stream;
     // The user can end sharing from the browser's own "Stop sharing" bar.
-    stream.getAudioTracks()[0]?.addEventListener('ended', () => {
-      if (this.stream === stream) this.stop();
-    });
+    for (const track of stream.getTracks()) {
+      track.addEventListener('ended', () => {
+        if (this.stream === stream) this.stop();
+      });
+    }
     void this.engine.resume();
     this.engine.attachCapture(stream);
     this.state = { active: true, kind, label };

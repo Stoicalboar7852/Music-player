@@ -20,17 +20,19 @@ export class LocalBackend implements Backend {
 
   constructor(private engine: AudioEngine) {
     const el = engine.element;
-    el.addEventListener('ended', () => this.events.ended?.());
-    el.addEventListener('playing', () => this.events.state?.(true));
+    // The engine briefly plays silence on the same element to unlock audio; ignore it.
+    const real = () => this.url !== null && el.src === this.url;
+    el.addEventListener('ended', () => real() && this.events.ended?.());
+    el.addEventListener('playing', () => real() && this.events.state?.(true));
     el.addEventListener('pause', () => {
       // "pause" also fires at the end of a track and while a new one loads.
-      if (!el.ended && el.readyState > 0) this.events.state?.(false);
+      if (real() && !el.ended && el.readyState > 0) this.events.state?.(false);
     });
     el.addEventListener('durationchange', () => {
-      if (Number.isFinite(el.duration) && el.duration > 0) this.events.meta?.({ duration: el.duration });
+      if (real() && Number.isFinite(el.duration) && el.duration > 0) this.events.meta?.({ duration: el.duration });
     });
     el.addEventListener('error', () => {
-      if (!el.src || el.src === location.href) return;
+      if (!real()) return;
       const code = el.error?.code;
       this.events.error?.(
         code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || code === MediaError.MEDIA_ERR_DECODE

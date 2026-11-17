@@ -2,6 +2,7 @@
 // streaming service.
 
 import type { App } from '../app/app';
+import { browserLimitation } from '../app/browser';
 import { captureAdvice, CaptureError } from '../audio/capture';
 import { clear, h, icon } from './dom';
 import type { IconName } from './icons';
@@ -53,7 +54,9 @@ function capturePanel(app: App): HTMLElement {
         ),
       );
     } else if (!capture.supported) {
-      status.append(h('div', { class: 'note warn', text: 'This browser cannot capture audio. Use Chrome or Edge on a desktop computer.' }));
+      status.append(
+        h('div', { class: 'note warn', text: browserLimitation() ?? 'This browser cannot capture audio. Use Chrome or Edge on a desktop computer.' }),
+      );
     }
   };
   const off = capture.on('change', renderStatus);

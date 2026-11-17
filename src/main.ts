@@ -1,8 +1,9 @@
 import './styles.css';
 
 import type { App, SheetName } from './app/app';
+import { browserLimitation, detectBrowser } from './app/browser';
 import { settings } from './app/settings';
-import { CaptureError, CaptureManager } from './audio/capture';
+import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { createHarness } from './debug/harness';
@@ -183,6 +184,7 @@ const welcome = h(
     h('button', { class: 'btn', type: 'button', onClick: () => app.openSheet('sources', 'capture') }, icon('capture', 18), 'System audio'),
     h('button', { class: 'btn', type: 'button', onClick: () => void app.playDemo() }, icon('sparkles', 18), 'Play demo'),
   ),
+  browserLimitation() ? h('p', { class: 'note warn', style: 'text-align:left;margin:0 auto 14px', text: browserLimitation()! }) : null,
   h('small', null, 'Press ', h('kbd', { text: '?' }), ' for keyboard shortcuts'),
 );
 
@@ -268,9 +270,32 @@ player.on('change', () => {
   }
 });
 player.on('error', (message) => toasts.show(message, 'error'));
+// A capture that hears nothing is usually a permission problem on macOS, or
+// simply nothing playing yet. Say which to check rather than leaving it silent.
+let silenceTimer = 0;
 capture.on('change', (state) => {
   route();
-  if (!state.active) toasts.show('Audio capture stopped.');
+  window.clearInterval(silenceTimer);
+  if (!state.active) {
+    toasts.show('Audio capture stopped.');
+    return;
+  }
+  let loudest = 0;
+  let checks = 0;
+  silenceTimer = window.setInterval(() => {
+    if (engine.analysisInput !== 'capture') return; // a local file is playing instead
+    loudest = Math.max(loudest, renderer.audio.level);
+    if (++checks < 32) return; // ~8 seconds
+    window.clearInterval(silenceTimer);
+    if (loudest > 0.01) return;
+    const mac = detectPlatform() === 'mac' && state.kind === 'display' && state.label.startsWith('System');
+    toasts.show(
+      mac
+        ? 'Nothing heard from the capture yet. If something is playing: open System Settings → Privacy & Security → Screen & System Audio Recording, switch Chrome on, then quit Chrome (Cmd+Q) and reopen it.'
+        : 'Nothing heard from the capture yet. Start something playing in what you shared; if it stays silent, stop and share again with the audio switch on.',
+      'error',
+    );
+  }, 250);
 });
 
 renderer.onChange = (def) => {
@@ -352,7 +377,18 @@ wake();
 
 canvas.addEventListener('dblclick', () => app.toggleFullscreen());
 // Autoplay policy: the audio context can only start from a gesture.
-for (const type of ['pointerdown', 'keydown'] as const) window.addEventListener(type, () => void engine.resume());
+// Browsers only allow sound to start inside a user gesture, and Safari only
+// counts some kinds of event, so unlock on all of them, synchronously.
+for (const type of ['pointerdown', 'pointerup', 'mousedown', 'click', 'keydown', 'touchend'] as const) {
+  window.addEventListener(type, () => engine.unlock(), { capture: true, passive: true });
+}
+engine.onBlocked = () =>
+  toasts.show(
+    detectBrowser().kind === 'safari'
+      ? 'Safari is keeping the sound off. Click anywhere on the page to turn it on.'
+      : 'The browser is keeping the sound off. Click anywhere on the page to turn it on.',
+    'error',
+  );
 
 installShortcuts(app, { sheetOpen: () => sheets.isOpen, queueOpen: () => queue.isOpen });
 connectMediaSession(player);

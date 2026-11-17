@@ -466,7 +466,8 @@ async function capture() {
     s = await state(page);
     check('sharing a tab with audio starts the capture', s.capture.active && s.capture.label === 'Tab audio', JSON.stringify(s.capture));
     check('captured audio drives the analysis', s.input === 'capture' && s.level > 0.05 && s.beats > 0, `level ${s.level.toFixed(2)}, ${s.beats} beats`);
-    check('the capture keeps running after the video track is dropped', (await page.evaluate(() => window.__phosphor.capture['stream'].getTracks().map((t) => `${t.kind}:${t.readyState}`).join())) === 'audio:live');
+    const tracks = await page.evaluate(() => window.__phosphor.capture['stream'].getTracks().map((t) => `${t.kind}:${t.readyState}:${t.enabled ? 'on' : 'off'}`).sort().join());
+    check('the capture keeps its video track alive but disabled (macOS ties system audio to it)', tracks === 'audio:live:on,video:live:off', tracks);
     // "Don't play it back": walk the live Web Audio graph (recorded by the init
     // script below) from the capture source and make sure the speakers cannot be
     // reached except through the permanently silent node that keeps the analysers running.

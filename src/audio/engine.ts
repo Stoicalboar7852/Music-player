@@ -12,6 +12,32 @@ import { FFT_SIZE } from './analysis';
 
 export type AnalysisInput = 'local' | 'capture';
 
+/** 0.1 s of silence as a WAV data URL, used to unlock the player inside a click. */
+function silentWav(): string {
+  const samples = 800; // 8 kHz, 8-bit mono
+  const bytes = new Uint8Array(44 + samples);
+  const view = new DataView(bytes.buffer);
+  const text = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i++) bytes[offset + i] = value.charCodeAt(i);
+  };
+  text(0, 'RIFF');
+  view.setUint32(4, 36 + samples, true);
+  text(8, 'WAVEfmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, 8000, true);
+  view.setUint32(28, 8000, true);
+  view.setUint16(32, 1, true);
+  view.setUint16(34, 8, true);
+  text(36, 'data');
+  view.setUint32(40, samples, true);
+  bytes.fill(128, 44);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return `data:audio/wav;base64,${btoa(binary)}`;
+}
+
 export class AudioEngine {
   readonly context: AudioContext;
   /** The element that plays local files. */
@@ -26,6 +52,11 @@ export class AudioEngine {
   private analyserR: AnalyserNode;
   private captureNode: MediaStreamAudioSourceNode | null = null;
   private input: AnalysisInput = 'local';
+  private primed = false;
+  private readonly silence = silentWav();
+
+  /** Called when audio is playing but the browser is keeping it silent. */
+  onBlocked: () => void = () => {};
 
   constructor() {
     const ctx = new AudioContext({ latencyHint: 'playback' });
@@ -64,6 +95,54 @@ export class AudioEngine {
     this.analyserL.connect(sink);
     this.analyserR.connect(sink);
     sink.connect(ctx.destination);
+
+    // If the element starts while the context is still suspended (the browser
+    // hasn't counted a click yet), the audio would play in silence. Try to
+    // start it, and say so if the browser refuses.
+    this.element.addEventListener('playing', () => {
+      if (this.element.src === this.silence) return;
+      if (ctx.state === 'running') return;
+      void ctx.resume().catch(() => {});
+      window.setTimeout(() => {
+        if (ctx.state !== 'running' && !this.element.paused) this.onBlocked();
+      }, 600);
+    });
+  }
+
+  /**
+   * Must be called synchronously inside a user gesture (click, key press).
+   * Starts the audio context and plays a moment of silence on the player so
+   * that browsers which only allow sound during a gesture (Safari) also allow
+   * the element to start later, e.g. after the demo track is synthesised.
+   */
+  unlock() {
+    if (this.context.state !== 'running') void this.context.resume().catch(() => {});
+    if (this.primed) return;
+    this.primed = true;
+    const el = this.element;
+    // Already holding a track: it was started from a gesture, nothing to prime.
+    if (el.getAttribute('src')) return;
+    el.src = this.silence;
+    el.play().then(
+      () => {
+        if (el.src !== this.silence) return; // a real track took over meanwhile
+        el.pause();
+        el.removeAttribute('src');
+        el.load();
+      },
+      () => {
+        if (el.src === this.silence) {
+          el.removeAttribute('src');
+          el.load();
+        }
+        this.primed = false; // try again on the next gesture
+      },
+    );
+  }
+
+  /** True while a priming clip (not real audio) is loaded. */
+  get priming(): boolean {
+    return this.element.src === this.silence;
   }
 
   private makeAnalyser(): AnalyserNode {
