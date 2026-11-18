@@ -10,6 +10,7 @@
 // YouTube's terms require the player to stay visible while it plays, so it
 // sits in a small frame in the corner whenever a YouTube track is current.
 
+import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import { settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
@@ -258,6 +259,7 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   }
 
   private onState(state: number) {
+    debug('youtube', `state: ${({ [-1]: 'unstarted', 0: 'ended', 1: 'playing', 2: 'paused', 3: 'buffering', 5: 'cued' } as Record<number, string>)[state] ?? state}`);
     const track = this.current;
     if (!track) return;
     const events = this.backend.events;

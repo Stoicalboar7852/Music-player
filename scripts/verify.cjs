@@ -47,6 +47,60 @@ if (arg('gpu', 'auto') !== 'native') GL_ARGS.push('--use-angle=swiftshader', '--
 
 const results = [];
 let failures = 0;
+// ------------------------------------------------------------- now playing
+//
+// Chromium publishes its media session (what macOS shows in Now Playing) on
+// Linux over D-Bus as MPRIS. Run under `dbus-run-session` to enable these
+// checks; without a session bus they are skipped.
+
+function gdbus(args) {
+  return execFileSync('gdbus', ['call', '--session', ...args], { env: { ...process.env, LC_ALL: 'C.UTF-8' } }).toString();
+}
+
+function mprisName() {
+  if (!process.env.DBUS_SESSION_BUS_ADDRESS) return null;
+  try {
+    const names = gdbus(['--dest', 'org.freedesktop.DBus', '--object-path', '/org/freedesktop/DBus', '--method', 'org.freedesktop.DBus.ListNames']);
+    return (names.match(/org\.mpris\.MediaPlayer2\.chromium[\w.]*/g) || []).pop() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** What the OS is told is playing: { title, artist, art, status }, or null without D-Bus. */
+function nowPlaying() {
+  const name = mprisName();
+  if (!name) return null;
+  const get = (prop) => gdbus(['--dest', name, '--object-path', '/org/mpris/MediaPlayer2', '--method', 'org.freedesktop.DBus.Properties.Get', 'org.mpris.MediaPlayer2.Player', prop]);
+  const meta = get('Metadata');
+  const field = (key) => (meta.match(new RegExp(`'${key}': <\\[?'((?:[^'\\\\]|\\\\.)*)'`)) || [])[1];
+  return {
+    title: field('xesam:title') ?? '',
+    artist: field('xesam:artist') ?? '',
+    art: /'mpris:artUrl': <'[^']+'/.test(meta),
+    status: (get('PlaybackStatus').match(/'(\w+)'/) || [])[1] ?? '',
+  };
+}
+
+/** Presses a media key the way the OS does (MPRIS Next, Previous, Play, Pause). */
+function mediaKey(method) {
+  const name = mprisName();
+  if (name) gdbus(['--dest', name, '--object-path', '/org/mpris/MediaPlayer2', '--method', `org.mpris.MediaPlayer2.Player.${method}`]);
+}
+
+/** Polls until Now Playing satisfies `test`, for up to `timeout` ms. */
+async function waitNowPlaying(test, timeout = 4000) {
+  const end = Date.now() + timeout;
+  let last = nowPlaying();
+  while (last && !test(last) && Date.now() < end) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    last = nowPlaying();
+  }
+  return last;
+}
+
+const describeNowPlaying = (np) => (np ? `"${np.title}" / "${np.artist}"${np.art ? ' + artwork' : ''} [${np.status}]` : 'no D-Bus session: skipped');
+
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail });
   if (!ok) failures++;
@@ -226,6 +280,11 @@ async function player(browser) {
   const accent = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim());
   check('interface accent colour is taken from the artwork', accent !== 'rgb(255 61 129)' && accent !== '#ff3d81', accent);
   check('media session shows the current track', await page.evaluate(() => navigator.mediaSession.metadata?.title === window.__phosphor.player.current.title));
+  {
+    const title = await page.evaluate(() => window.__phosphor.player.current.title);
+    const np = await waitNowPlaying((n) => n.title === title);
+    if (np) check('Now Playing (as the OS sees it) shows the local track', np.title === title && np.artist === 'Phosphor Test Signal' && np.art, describeNowPlaying(np));
+  }
 
   // Each format must actually decode and play in this browser.
   for (let i = 0; i < files.length; i++) {
@@ -632,6 +691,71 @@ async function spotify() {
   s = await state(page);
   check('when a Spotify track ends the queue advances', s.index === 1 && s.playing, `index ${s.index}`);
 
+  // ---- songs that play all the way to the end, the way they really do
+  const queueSpotify = (ids, setup = {}) =>
+    page.evaluate(async ([ids, setup]) => {
+      Object.assign(window, { __fakeSpotifyAutoplay: false, __fakeSpotifyRelink: false, __fakeSpotifySilentEnd: false, __fakeSpotifyRadioStarted: false }, setup);
+      const { app, player } = window.__phosphor;
+      const service = app.services.find((x) => x.id === 'spotify');
+      const tracks = [];
+      for (const id of ids) tracks.push(...(await service.resolveLink('https://open.spotify.com/track/' + id)).tracks);
+      player.clear();
+      player.add(tracks, { play: true });
+    }, [ids, setup]);
+  const reachesIndex = (i, timeout = 25000) =>
+    page
+      .waitForFunction((i) => window.__phosphor.player.currentIndex === i && window.__phosphor.player.playing && window.__phosphor.player.position > 0.3, i, { timeout })
+      .then(() => true, () => false);
+  const fakeTrack = () => page.evaluate(() => window.__fakeSpotify.track?.uri);
+
+  await queueSpotify(['short1', 'short2', 'short3']);
+  await reachesIndex(0, 10000);
+  let advanced = await reachesIndex(1);
+  await page.waitForTimeout(2500);
+  s = await state(page);
+  check('a Spotify song that plays to its end by itself starts the next song', advanced && (await fakeTrack()) === 'spotify:track:short2');
+  check('...and only once, though Spotify reports the end twice', s.index === 1, `index ${s.index}`);
+
+  await queueSpotify(['short1', 'short2'], { __fakeSpotifyAutoplay: true });
+  advanced = await reachesIndex(1);
+  await page.waitForTimeout(1500);
+  check('with Spotify autoplay on, the next song is still Phosphor\'s', advanced && (await fakeTrack()) === 'spotify:track:short2');
+
+  await queueSpotify(['short1', 'short2'], { __fakeSpotifyAutoplay: 'direct' });
+  advanced = await reachesIndex(1);
+  await page.waitForTimeout(1500);
+  check('if Spotify jumps straight to its own pick, Phosphor stops it and plays its next song', advanced && (await page.evaluate(() => window.__fakeSpotifyRadioStarted)) && (await fakeTrack()) === 'spotify:track:short2');
+
+  await queueSpotify(['short1', 'short2'], { __fakeSpotifyRelink: true });
+  const relinkedPlaying = await reachesIndex(0, 10000);
+  advanced = await reachesIndex(1);
+  check('a relinked copy of a song (different Spotify ID) is followed and still advances', relinkedPlaying && advanced);
+
+  await queueSpotify(['short1', 'short2'], { __fakeSpotifySilentEnd: true });
+  advanced = await reachesIndex(1);
+  check('even if Spotify says nothing at the end, Phosphor notices and moves on', advanced);
+
+  // ---- Now Playing and media keys, with the audio playing inside Spotify's iframe
+  await queueSpotify(['short1', 'short2', 'short3']);
+  await reachesIndex(0, 10000);
+  let np = await waitNowPlaying((n) => n.title === 'Short Song 1');
+  if (np) {
+    check('Now Playing shows the Spotify song\'s title, artist and artwork, not the tab title', np.title === 'Short Song 1' && np.artist === 'The Simulators' && np.art, describeNowPlaying(np));
+    mediaKey('Next');
+    check('the Next media key skips to the next song in Phosphor\'s queue', await reachesIndex(1, 6000));
+    np = await waitNowPlaying((n) => n.title === 'Short Song 2');
+    check('...and Now Playing follows it', np.title === 'Short Song 2', describeNowPlaying(np));
+    mediaKey('Pause');
+    await page.waitForTimeout(800);
+    np = await waitNowPlaying((n) => n.status === 'Paused');
+    check('the Pause media key pauses, and Now Playing still shows the song as paused', !(await state(page)).playing && np.title === 'Short Song 2' && np.status === 'Paused', describeNowPlaying(np));
+    mediaKey('Play');
+    await page.waitForTimeout(800);
+    check('the Play media key resumes', (await state(page)).playing && !(await page.evaluate(() => window.__fakeSpotify.audio.paused)));
+  } else {
+    console.log('   --   Now Playing checks skipped: run under dbus-run-session to include them');
+  }
+
   // ---- expired access token
   mock.expireTokens();
   const refreshed = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').search('again').then((r) => r.tracks.length, (e) => String(e)));
@@ -790,6 +914,22 @@ async function apple() {
   s = await state(page);
   check('when an Apple Music song ends the queue advances', s.index === 1 && s.playing, `index ${s.index}`);
 
+  // ---- songs that play all the way to the end by themselves
+  await page.evaluate(async () => {
+    const { app, player } = window.__phosphor;
+    const service = app.services.find((x) => x.id === 'apple');
+    const tracks = [];
+    for (const id of ['3001', '3002', '3003']) tracks.push(...(await service.resolveLink(`https://music.apple.com/us/song/short/${id}`)).tracks);
+    player.clear();
+    player.add(tracks, { play: true });
+  });
+  const appleAdvanced = await page
+    .waitForFunction(() => window.__phosphor.player.currentIndex === 1 && window.__phosphor.player.playing && window.__phosphor.player.position > 0.3, null, { timeout: 25000 })
+    .then(() => true, () => false);
+  await page.waitForTimeout(2500);
+  s = await state(page);
+  check('an Apple Music song that plays to its end by itself starts the next one, once', appleAdvanced && s.index === 1, `index ${s.index}`);
+
   // ---- sign out
   await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'apple').disconnect());
   await page.waitForTimeout(300);
@@ -862,6 +1002,10 @@ async function youtube() {
   let s = await state(page);
   const current = await page.evaluate(() => window.__phosphor.player.current);
   check('a pasted video plays in the YouTube player', s.playing && current?.source === 'youtube');
+  {
+    const np = await waitNowPlaying((n) => n.title === 'Mock Clip A');
+    if (np) check('Now Playing shows the YouTube video\'s title and artist, not the tab title', np.title === 'Mock Clip A' && np.artist === 'Clip Makers', describeNowPlaying(np));
+  }
   check('without a key, the title and artist fill in from the player once it loads ("- Topic" removed)', current.title === 'Mock Clip A' && current.artist === 'Clip Makers', `${current.title} / ${current.artist}`);
   check('the video thumbnail is used as artwork', /i\.ytimg\.com\/vi\/aaaaaaaaaaa/.test(current.artworkUrl ?? ''));
   await page.keyboard.press('Escape');
@@ -923,6 +1067,27 @@ async function youtube() {
   });
   await page.waitForFunction(() => window.__phosphor.player.current?.ref === 'ccccccccccc' && window.__phosphor.player.position > 0.3, null, { timeout: 10000 }).catch(() => {});
   check('when a video ends the queue advances', (await page.evaluate(() => window.__phosphor.player.current?.ref)) === 'ccccccccccc');
+
+  // ---- videos that play all the way to the end by themselves
+  const queueVideos = (ids, noEnded = false) =>
+    page.evaluate(async ([ids, noEnded]) => {
+      window.__fakeYouTubeNoEnded = noEnded;
+      const { app, player } = window.__phosphor;
+      const service = app.services.find((x) => x.id === 'youtube');
+      player.clear();
+      player.add(ids.map((id) => service['videoTrack'](id)), { play: true });
+    }, [ids, noEnded]);
+  const videoAt = (i, timeout = 25000) =>
+    page
+      .waitForFunction((i) => window.__phosphor.player.currentIndex === i && window.__phosphor.player.playing && window.__phosphor.player.position > 0.3, i, { timeout })
+      .then(() => true, () => false);
+  await queueVideos(['shortclip01', 'shortclip02', 'shortclip03']);
+  const videoAdvanced = await videoAt(1);
+  await page.waitForTimeout(2500);
+  check('a video that plays to its end by itself starts the next one, once', videoAdvanced && (await state(page)).index === 1, `index ${(await state(page)).index}`);
+  await queueVideos(['shortclip02', 'shortclip03'], true);
+  check('if a player never reports the end, the safety net moves on a few seconds later', await videoAt(1, 30000));
+  await page.evaluate(() => (window.__fakeYouTubeNoEnded = false));
 
   // ---- with an API key
   await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'mock-api-key' }));

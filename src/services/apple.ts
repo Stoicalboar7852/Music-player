@@ -5,6 +5,7 @@
 // As with Spotify, the audio itself cannot be read: the visualizers are fed
 // by sharing this tab's audio.
 
+import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import { settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
@@ -245,6 +246,7 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
     const S = MusicKit.PlaybackStates;
     const events = this.backend.events;
     music.addEventListener('playbackStateDidChange', ({ state }: { state: number }) => {
+      debug('apple', `state: ${Object.keys(S).find((k) => S[k] === state) ?? state} at ${music.currentPlaybackTime?.toFixed?.(1)}s`);
       if (!this.active) return;
       if (state === S.playing) {
         this.endedSent = false;

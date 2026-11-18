@@ -9,6 +9,8 @@
 
 const crypto = require('node:crypto');
 
+const { FRAME_PLAYER_SOURCE, routeFramePlayer } = require('./frame-player.cjs');
+
 const TRACKS = Array.from({ length: 12 }, (_, i) => ({
   uri: `spotify:track:mock${i}`,
   id: `mock${i}`,
@@ -19,26 +21,68 @@ const TRACKS = Array.from({ length: 12 }, (_, i) => ({
   album: { name: 'Stand-In Sessions', images: [{ url: 'https://i.scdn.co/image/mock-cover' }] },
 }));
 
-// The fake Web Playback SDK, served in place of sdk.scdn.co/spotify-player.js.
-// It plays a local file through a plain <audio> element, which, like the real
-// SDK's protected stream, never touches the app's Web Audio graph.
+// 8-second songs for tests that let a track play all the way to its end.
+const SHORT = [1, 2, 3].map((n) => ({
+  uri: `spotify:track:short${n}`,
+  id: `short${n}`,
+  name: `Short Song ${n}`,
+  type: 'track',
+  duration_ms: 8046,
+  artists: [{ name: 'The Simulators' }],
+  album: { name: 'Quick Takes', images: [{ url: 'https://i.scdn.co/image/mock-cover' }] },
+}));
+
+// The simulated Web Playback SDK, served in place of sdk.scdn.co/spotify-player.js.
+// Like the real one, it plays inside a cross-origin iframe and reports state
+// only when something changes (never on a timer). At the end of a one-track
+// context it moves the track into previous_tracks, pauses back at 0 and
+// reports that, usually twice. Test switches on window:
+//   __fakeSpotifyAutoplay = true      after the end, start Spotify's own pick a moment later
+//   __fakeSpotifyAutoplay = 'direct'  at the end, jump straight to Spotify's pick (no paused report)
+//   __fakeSpotifyRelink = true        play a relinked copy (different URI, same song)
+//   __fakeSpotifySilentEnd = true     report nothing at the end (only getCurrentState knows)
 const SDK_SOURCE = `
 (() => {
+  ${FRAME_PLAYER_SOURCE}
+  const RADIO = ${JSON.stringify(TRACKS[11])};
   class Player {
-    constructor(opts) { this.opts = opts; this.listeners = {}; this.audio = new Audio(); this.audio.volume = opts.volume ?? 1; this.track = null; this.loading = false;
-      const emit = () => this.emit('player_state_changed', this.state());
-      for (const e of ['playing', 'pause', 'seeked']) this.audio.addEventListener(e, emit);
-      // The real SDK reports a finished track as paused at position 0.
-      this.audio.addEventListener('ended', () => { this.audio.pause(); this.audio.currentTime = 0; emit(); });
+    constructor(opts) {
+      this.opts = opts; this.listeners = {}; this.track = null; this.loading = false; this.previous = []; this.vol = opts.volume ?? 1;
+      this.fp = new FramePlayer('https://sdk.scdn.co/embedded/index.html');
+      this.fp.on('playing', () => { if (!this.loading) this.report(); });
+      this.fp.on('pause', (m) => { if (!m.ended) this.report(); });
+      this.fp.on('seeked', () => this.report());
+      this.fp.on('ended', () => void this.finishTrack());
       window.__fakeSpotify = this;
     }
+    get audio() { return { ...this.fp.audio, volume: this.vol }; }
     addListener(name, cb) { (this.listeners[name] ??= []).push(cb); return true; }
     emit(name, payload) { for (const cb of this.listeners[name] ?? []) cb(payload); }
-    state() {
+    snapshot(over = {}) {
       if (!this.track) return null;
-      return { paused: this.audio.paused, loading: this.loading, position: Math.round(this.audio.currentTime * 1000),
-        duration: Math.round((this.audio.duration || 40.672) * 1000), timestamp: Date.now(),
-        track_window: { current_track: this.track, previous_tracks: [], next_tracks: [] } };
+      const c = this.fp.cached;
+      // After the end, the real SDK reports the track paused back at 0.
+      return { paused: c.paused || c.ended, loading: this.loading, position: c.ended ? 0 : Math.round(c.t * 1000),
+        duration: Math.round((c.d || this.track.duration_ms / 1000) * 1000), timestamp: Date.now(),
+        track_window: { current_track: this.track, previous_tracks: this.previous.slice(), next_tracks: [] }, ...over };
+    }
+    report(over) { const s = this.snapshot(over); if (s) this.emit('player_state_changed', s); }
+    async finishTrack() {
+      const done = this.track;
+      if (window.__fakeSpotifyAutoplay === 'direct') { this.previous = [done]; await this.startRadio(done); return; }
+      this.previous = [done];
+      if (window.__fakeSpotifySilentEnd) return;
+      // The report describes the moment the track ended, including the repeat.
+      const ended = this.snapshot({ paused: true, position: 0 });
+      this.emit('player_state_changed', ended);
+      setTimeout(() => this.emit('player_state_changed', { ...ended, timestamp: Date.now() }), 120);
+      if (window.__fakeSpotifyAutoplay) setTimeout(() => { if (this.track === done) void this.startRadio(done); }, 900);
+    }
+    async startRadio(after) {
+      window.__fakeSpotifyRadioStarted = true;
+      this.track = RADIO; this.previous = [after]; this.loading = true; this.report({ paused: false });
+      await this.fp.send('load', { src: 'https://sdk.scdn.co/mock-audio/signal-check.mp3', play: true });
+      this.loading = false; this.report();
     }
     async connect() {
       const token = await new Promise((resolve) => this.opts.getOAuthToken(resolve));
@@ -47,21 +91,22 @@ const SDK_SOURCE = `
       setTimeout(() => this.emit('ready', { device_id: 'mock-device-1' }), 30);
       return true;
     }
-    disconnect() { this.audio.pause(); }
+    disconnect() { void this.fp.send('pause'); }
     async activateElement() {}
-    async pause() { this.audio.pause(); }
-    async resume() { await this.audio.play(); }
-    async seek(ms) { this.audio.currentTime = ms / 1000; }
-    async setVolume(v) { this.audio.volume = v; }
-    async getVolume() { return this.audio.volume; }
-    async getCurrentState() { return this.state(); }
-    // Called by the mock Web API when the app asks Spotify to play a URI on this device.
+    async pause() { await this.fp.send('pause'); }
+    async resume() { await this.fp.send('play'); }
+    async seek(ms) { await this.fp.send('seek', { t: ms / 1000 }); }
+    async setVolume(v) { this.vol = v; await this.fp.send('volume', { v }); }
+    async getVolume() { return this.vol; }
+    async getCurrentState() { return this.snapshot(); }
+    // Called by the simulated Web API when the app asks Spotify to play a URI on this device.
     async __play(track) {
-      this.track = track; this.loading = true; this.emit('player_state_changed', this.state());
-      // A blob URL is fully seekable, like the SDK's own stream.
-      window.__fakeSpotifyBlob ??= URL.createObjectURL(await (await fetch('/.verify/audio/signal-check.mp3')).blob());
-      this.audio.src = window.__fakeSpotifyBlob;
-      await this.audio.play(); this.loading = false; this.emit('player_state_changed', this.state());
+      this.previous = [];
+      this.track = window.__fakeSpotifyRelink ? { ...track, uri: track.uri.replace(':track:', ':track:relinked-'), id: 'relinked-' + track.id } : track;
+      this.loading = true; this.report({ paused: false });
+      const file = track.duration_ms <= 10000 ? 'signal-check-short.mp3' : 'signal-check.mp3';
+      await this.fp.send('load', { src: 'https://sdk.scdn.co/mock-audio/' + file, play: true });
+      this.loading = false; this.report();
     }
   }
   window.Spotify = { Player };
@@ -82,6 +127,7 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
     route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,PUT,POST,DELETE,OPTIONS' } });
 
   await context.route('https://sdk.scdn.co/spotify-player.js', (route) => route.fulfill({ contentType: 'application/javascript', body: SDK_SOURCE }));
+  await routeFramePlayer(context, 'https://sdk.scdn.co', '/embedded/index.html');
   await context.route('https://i.scdn.co/**', (route) =>
     route.fulfill({ path: require('node:path').resolve('.verify/audio/cover.png'), headers: { 'access-control-allow-origin': '*' } }),
   );
@@ -154,14 +200,14 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
     if (path === '/albums/album1/tracks') return json(route, 200, page(TRACKS.slice(6, 9).map(({ album, ...t }) => t)));
     if (path === '/albums/album1') return json(route, 200, { id: 'album1', name: 'Stand-In Sessions', artists: [{ name: 'The Simulators' }], images: [{ url: 'https://i.scdn.co/image/mock-cover' }] });
     if (path.startsWith('/tracks/')) {
-      const t = TRACKS.find((x) => x.id === path.slice(8));
+      const t = [...TRACKS, ...SHORT].find((x) => x.id === path.slice(8));
       return t ? json(route, 200, t) : json(route, 404, { error: { status: 404, message: 'Not found' } });
     }
     if (path === '/me/player/play' && req.method() === 'PUT') {
       const body = JSON.parse(req.postData() ?? '{}');
       log.playRequests.push({ device: url.searchParams.get('device_id'), uris: body.uris });
       if (url.searchParams.get('device_id') !== 'mock-device-1') return json(route, 404, { error: { status: 404, message: 'Device not found' } });
-      const track = TRACKS.find((t) => t.uri === body.uris?.[0]);
+      const track = [...TRACKS, ...SHORT].find((t) => t.uri === body.uris?.[0]);
       if (!track) return json(route, 400, { error: { status: 400, message: 'Invalid track uri' } });
       // Like the real service: accept the command, then the device starts playing.
       req.frame().page().evaluate((t) => void window.__fakeSpotify.__play(t), track).catch(() => {});
@@ -173,4 +219,4 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
   return { log, expireTokens: () => validTokens.clear() };
 }
 
-module.exports = { installSpotifyMock, SPOTIFY_TRACKS: TRACKS };
+module.exports = { installSpotifyMock, SPOTIFY_TRACKS: TRACKS, SPOTIFY_SHORT: SHORT };

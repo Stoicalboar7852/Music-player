@@ -14,6 +14,8 @@ const SDK_SOURCE = `
   const art = { url: 'https://is1-ssl.mzstatic.com/image/thumb/mock/{w}x{h}bb.jpg', width: 3000, height: 3000 };
   const song = (id, name, extra = {}) => ({ id: String(id), type: 'songs', attributes: { name, artistName: 'The Understudies', albumName: 'Dress Rehearsal', durationInMillis: 40672, artwork: art, playParams: { id: String(id), kind: 'song' }, ...extra } });
   const SONGS = [2001, 2002, 2003, 2004, 2005, 2006].map((id, i) => song(id, 'Stand-In Track ' + (i + 1)));
+  // 8-second songs for tests that play to the end.
+  const SHORT = [3001, 3002, 3003].map((id, i) => song(id, 'Short Apple Song ' + (i + 1), { durationInMillis: 8046 }));
   const UNAVAILABLE = { id: '2999', type: 'songs', attributes: { name: 'Not In Your Country', artistName: 'Nobody', artwork: art } };
   const ALBUM = { id: '1001', type: 'albums', attributes: { name: 'Dress Rehearsal', artistName: 'The Understudies', artwork: art } };
   const PLAYLIST = { id: 'pl.mock1', type: 'playlists', attributes: { name: 'Understudy Essentials', curatorName: 'Apple Music Mock', artwork: art } };
@@ -45,11 +47,14 @@ const SDK_SOURCE = `
     async unauthorize() { this.isAuthorized = false; this.emit('authorizationStatusDidChange', { authorizationStatus: 0 }); }
     async setQueue(options) {
       window.__fakeAppleLog.queue.push(options);
-      const known = [...SONGS, ...LIB_SONGS].some((s) => s.attributes.playParams.id === options.song);
+      const known = [...SONGS, ...SHORT, ...LIB_SONGS].some((s) => s.attributes.playParams.id === options.song);
       if (!known) throw new Error('CONTENT_UNAVAILABLE');
       this.setState(States.loading);
-      window.__fakeAppleBlob ??= URL.createObjectURL(await (await fetch('/.verify/audio/signal-check.mp3')).blob());
-      this.audio.src = window.__fakeAppleBlob;
+      const short = SHORT.some((s) => s.id === options.song);
+      const file = short ? 'signal-check-short.mp3' : 'signal-check.mp3';
+      window.__fakeAppleBlobs ??= {};
+      window.__fakeAppleBlobs[file] ??= URL.createObjectURL(await (await fetch('/.verify/audio/' + file)).blob());
+      this.audio.src = window.__fakeAppleBlobs[file];
       if (options.startPlaying) await this.audio.play();
     }
     async play() { await this.audio.play(); }
@@ -70,6 +75,8 @@ const SDK_SOURCE = `
       if (p === '/v1/me/library/playlists/p.lib1/tracks') return ok({ data: LIB_SONGS });
       if (p === '/v1/catalog/gb/songs/2003') return ok({ data: [SONGS[2]] });
       if (p === '/v1/catalog/us/songs/2005') return ok({ data: [SONGS[4]] });
+      const shortSong = SHORT.find((x) => p === '/v1/catalog/us/songs/' + x.id);
+      if (shortSong) return ok({ data: [shortSong] });
       if (p === '/v1/catalog/us/albums/1001') return ok({ data: [ALBUM] });
       if (p === '/v1/catalog/us/playlists/pl.mock1') return ok({ data: [PLAYLIST] });
       throw new Error('404 Not Found: ' + p);

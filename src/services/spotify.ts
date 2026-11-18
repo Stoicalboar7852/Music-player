@@ -11,6 +11,7 @@
 //  - February 2026 Web API changes: playlist "tracks" became "items", and
 //    development-mode apps are capped at 10 search results per type
 
+import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import { appBaseUrl, settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
@@ -57,6 +58,8 @@ interface SdkTrack {
   duration_ms: number;
   artists: { name: string }[];
   album: { name: string; images: { url: string }[] };
+  /** Present when Spotify plays a different copy of the requested track ("relinking"). */
+  linked_from?: { uri: string | null } | null;
 }
 
 interface SdkState {
@@ -77,6 +80,7 @@ interface SdkPlayer {
   seek(ms: number): Promise<void>;
   setVolume(volume: number): Promise<void>;
   activateElement(): Promise<void>;
+  getCurrentState(): Promise<SdkState | null>;
 }
 
 declare global {
@@ -223,11 +227,12 @@ class SpotifyBackend implements Backend {
     await this.service.sdk?.resume();
   }
   async pause() {
+    this.service.notePause();
     await this.service.sdk?.pause();
   }
   async seek(seconds: number) {
-    await this.service.sdk?.seek(Math.round(seconds * 1000));
     this.service.noteSeek(seconds);
+    await this.service.sdk?.seek(Math.round(seconds * 1000));
   }
   setVolume(volume: number) {
     this.service.volume = volume;
@@ -241,6 +246,7 @@ class SpotifyBackend implements Backend {
   }
   async stop() {
     this.service.expectUri = null;
+    this.service.notePause();
     await this.service.sdk?.pause().catch(() => {});
   }
 }
@@ -270,9 +276,24 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   private problem = '';
   private connecting: Promise<void> | null = null;
   private refreshing: Promise<string> | null = null;
+  // End-of-track detection. The SDK has no "ended" event and only reports
+  // state when something changes, so the end has to be inferred.
   private sawPlaying = false;
-  /** When we last sought to the start of a track (see onState). */
+  /** performance.now() when `last` arrived; positions are extrapolated from it. */
+  private lastAt = 0;
+  /** Title of the requested track, to recognise a relinked copy of it. */
+  private expectTitle = '';
+  /** The URI Spotify actually plays for our request (differs when it relinks). */
+  private actualUri: string | null = null;
+  private requestedAt = 0;
+  /** Furthest point (ms) the current pass through the track has reached. */
+  private furthest = 0;
+  /** The URI we already reported as ended, so it is reported once. */
+  private endedFor: string | null = null;
+  private pausedByUsAt = 0;
+  /** When we last sought to the very start (which also reads as "paused at 0"). */
   private seekedAt = 0;
+  private checkingEnd = false;
 
   constructor() {
     super();
@@ -294,6 +315,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     }
     // Returning from a full-page sign-in, or tokens kept from last time: reconnect quietly.
     if (this.tokens && this.tokens.clientId === this.clientId) void this.connect().catch(() => {});
+    window.setInterval(() => void this.checkEnd(), 1000);
   }
 
   private authWaiter: ((failure: string) => void) | null = null;
@@ -477,53 +499,137 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   private onState(state: SdkState | null) {
     // null means playback moved to another device.
     if (!state) {
+      debug('spotify', 'state: none (playback is on another device)');
       this.last = null;
       this.backend.events.state?.(false);
       return;
     }
     const current = state.track_window.current_track;
-    if (!this.expectUri || !current) return;
-    const previous = this.last;
-    this.last = state;
+    debug(
+      'spotify',
+      `state: ${current?.name ?? '-'} ${state.paused ? 'paused' : 'playing'}${state.loading ? ' loading' : ''} at ${(state.position / 1000).toFixed(1)}/${(state.duration / 1000).toFixed(1)}s` +
+        ` previous=[${state.track_window.previous_tracks.map((t) => t.name).join(', ')}]`,
+    );
+    if (!this.expectUri || !current || this.endedFor === this.expectUri) return;
+    // Where we believed playback was just before this report.
+    const believed = this.extrapolate();
     const events = this.backend.events;
 
-    if (current.uri === this.expectUri) {
+    if (this.isOurs(current)) {
+      if (!this.actualUri && current.uri !== this.expectUri) debug('spotify', `relinked: playing ${current.uri} for ${this.expectUri}`);
+      this.actualUri ??= current.uri;
+      this.furthest = Math.max(this.furthest, believed, state.position);
+      this.last = state;
+      this.lastAt = performance.now();
       if (!state.paused && !state.loading) this.sawPlaying = true;
-      // The SDK has no "ended" event. A finished track shows up as paused at
-      // position 0 after it had been playing (and not because we just sought there).
-      const ended =
-        this.sawPlaying &&
-        state.paused &&
-        state.position === 0 &&
-        !state.loading &&
-        Boolean(previous && previous.position > 0) &&
-        performance.now() - this.seekedAt > 1500;
-      if (ended) {
-        this.sawPlaying = false;
-        events.ended?.();
+      if (this.looksFinished(state)) {
+        this.finish('it stopped at the end');
         return;
       }
       events.meta?.({ duration: state.duration / 1000 });
       if (!state.loading) events.state?.(!state.paused);
-    } else if (this.sawPlaying && state.track_window.previous_tracks.some((t) => t.uri === this.expectUri)) {
-      // Spotify moved on by itself (autoplay / its own queue): our track is over.
-      this.sawPlaying = false;
+      return;
+    }
+
+    // Another track is playing on our device. If ours had been playing to its
+    // end, Spotify moved on by itself (autoplay or its own queue): stop its
+    // pick and let Phosphor's queue decide what comes next.
+    this.furthest = Math.max(this.furthest, believed);
+    if (this.sawPlaying && (this.nearEnd() || state.track_window.previous_tracks.some((t) => this.isOurs(t)))) {
       void this.sdk?.pause().catch(() => {});
-      events.ended?.();
+      this.finish('Spotify moved on to another track');
+    }
+  }
+
+  private isOurs(track: SdkTrack | null | undefined): boolean {
+    if (!track || !this.expectUri) return false;
+    if (track.uri === this.expectUri || (this.actualUri !== null && track.uri === this.actualUri)) return true;
+    if (track.linked_from?.uri === this.expectUri) return true;
+    // Spotify can swap in another copy of the same song for your country
+    // ("relinking"). Right after our request, a track of the same name is ours.
+    return this.actualUri === null && performance.now() - this.requestedAt < 20000 && track.name === this.expectTitle;
+  }
+
+  /** Has this pass through the track got to within 4 s of the end? */
+  private nearEnd(duration = this.last?.duration ?? 0): boolean {
+    return duration > 0 && this.furthest >= duration - 4000;
+  }
+
+  /**
+   * A finished track shows up as paused, either back at the start or sitting
+   * at the very end, after playback had got near the end. Pauses and seeks
+   * that Phosphor itself just asked for don't count.
+   */
+  private looksFinished(state: SdkState): boolean {
+    if (!this.sawPlaying || !state.paused || state.loading) return false;
+    const now = performance.now();
+    if (now - this.pausedByUsAt < 2000 || now - this.seekedAt < 1500) return false;
+    const atStart = state.position < 1500;
+    const atEnd = state.position >= state.duration - 1500;
+    if (!atStart && !atEnd) return false;
+    // Spotify lists a finished track in previous_tracks; our own clock is the other witness.
+    return this.nearEnd(state.duration) || (atStart && state.track_window.previous_tracks.some((t) => this.isOurs(t)));
+  }
+
+  private finish(reason: string) {
+    if (!this.expectUri || this.endedFor === this.expectUri) return;
+    this.endedFor = this.expectUri;
+    this.sawPlaying = false;
+    debug('spotify', `track ended: ${reason}`);
+    this.backend.events.ended?.();
+  }
+
+  /**
+   * Safety net, once a second: if our clock says the track should have ended
+   * a moment ago and Spotify has said nothing, ask the player directly.
+   */
+  private async checkEnd() {
+    const s = this.last;
+    if (!s || !this.sdk || !this.expectUri || this.endedFor === this.expectUri || s.paused || this.checkingEnd) return;
+    const elapsed = s.position + (performance.now() - this.lastAt);
+    this.furthest = Math.max(this.furthest, Math.min(elapsed, s.duration));
+    if (elapsed < s.duration + 1500) return;
+    this.checkingEnd = true;
+    try {
+      const fresh = await this.sdk.getCurrentState();
+      debug('spotify', 'past the end with no report; asked the player');
+      if (!fresh) return;
+      this.onState(fresh);
+      // Still claiming to play our track right at its end: trust the clock.
+      const current = fresh.track_window.current_track;
+      if (!fresh.paused && this.isOurs(current) && fresh.position >= fresh.duration - 500) this.finish('it sat at the end');
+    } catch {
+      /* try again next second */
+    } finally {
+      this.checkingEnd = false;
     }
   }
 
   noteSeek(seconds: number) {
     // Only a seek back to the very start can be mistaken for the end of a track.
     if (seconds < 1) this.seekedAt = performance.now();
-    if (this.last) this.last = { ...this.last, position: seconds * 1000, timestamp: Date.now() };
+    // "Near the end" is about the current pass through the track.
+    this.furthest = seconds * 1000;
+    if (this.last) {
+      this.last = { ...this.last, position: seconds * 1000 };
+      this.lastAt = performance.now();
+    }
+  }
+
+  notePause() {
+    this.pausedByUsAt = performance.now();
+  }
+
+  /** Where playback is now (ms), extrapolated from the last report. */
+  private extrapolate(): number {
+    const s = this.last;
+    if (!s) return 0;
+    const elapsed = s.paused ? 0 : performance.now() - this.lastAt;
+    return Math.min(s.duration, s.position + Math.max(0, elapsed));
   }
 
   position(): number {
-    const s = this.last;
-    if (!s) return 0;
-    const elapsed = s.paused ? 0 : Date.now() - s.timestamp;
-    return Math.min(s.duration, s.position + Math.max(0, elapsed)) / 1000;
+    return this.extrapolate() / 1000;
   }
 
   /** Starts a track on this tab's Spotify device. */
@@ -531,8 +637,14 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     if (!track.ref) throw new Error('missing Spotify URI');
     if (!this.sdk || !this.deviceId) await this.connect();
     this.expectUri = track.ref;
+    this.expectTitle = track.title;
+    this.actualUri = null;
+    this.endedFor = null;
+    this.furthest = 0;
     this.sawPlaying = false;
     this.last = null;
+    this.requestedAt = performance.now();
+    debug('spotify', `play ${track.ref} (${track.title})`);
     // Lets the SDK start audio even if the click that got us here has expired.
     await this.sdk?.activateElement().catch(() => {});
     const start = () =>

@@ -43,4 +43,6 @@ try {
 } catch {
   console.warn('m4a encode skipped');
 }
+// An 8-second excerpt for end-of-track tests, so they don't wait 40 s per song.
+ff(['-ss', '15.5', '-t', '8', '-i', wav, '-af', 'afade=t=in:d=0.05,afade=t=out:st=7.5:d=0.5', '-c:a', 'libmp3lame', '-b:a', '160k', join(outDir, 'signal-check-short.mp3')]);
 console.log(`Wrote test audio to ${outDir}`);

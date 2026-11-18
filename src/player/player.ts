@@ -1,6 +1,7 @@
 // The player: one queue and one transport, whatever is producing the sound.
 // Each track names its source; the matching backend plays it.
 
+import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import type { RepeatMode } from '../app/settings';
 import type { Backend, SourceId, Track } from './types';
@@ -22,6 +23,18 @@ export class Player extends Emitter<PlayerEvents> {
   repeat: RepeatMode = 'off';
   volume = 0.8;
   muted = false;
+
+  /** The track whose end has already been handled, so one ending advances once. */
+  private endedHandledFor: string | null = null;
+  /** When playback reached the last moments of the current track (see watchEnd). */
+  private nearEndSince: number | null = null;
+  /** The user paused (as opposed to the track stopping by itself). */
+  private userPaused = false;
+
+  constructor() {
+    super();
+    window.setInterval(() => this.watchEnd(), 500);
+  }
 
   private currentId: string | null = null;
   private backends = new Map<SourceId, Backend>();
@@ -161,6 +174,9 @@ export class Player extends Emitter<PlayerEvents> {
       return;
     }
     const token = ++this.loadToken;
+    this.endedHandledFor = null;
+    this.nearEndSince = null;
+    this.userPaused = false;
     if (this.active && this.active !== backend) await this.active.stop().catch(() => {});
     this.active = backend;
     this.currentId = id;
@@ -202,6 +218,9 @@ export class Player extends Emitter<PlayerEvents> {
       return;
     }
     this.playing = true;
+    this.userPaused = false;
+    // Replaying a track that already ended (end of the queue): its next ending counts again.
+    if (this.endedHandledFor === this.currentId) this.endedHandledFor = null;
     this.emit('change', undefined);
     try {
       await this.active.play();
@@ -215,6 +234,7 @@ export class Player extends Emitter<PlayerEvents> {
   async pause() {
     if (!this.active) return;
     this.playing = false;
+    this.userPaused = true;
     this.emit('change', undefined);
     await this.active.pause().catch(() => {});
   }
@@ -223,11 +243,15 @@ export class Player extends Emitter<PlayerEvents> {
     this.loadToken++;
     this.playing = false;
     this.loading = false;
-    await this.active?.stop().catch(() => {});
+    // Update the state now, not after the backend has stopped: something may
+    // start playing in the meantime (clearing the queue and adding new tracks
+    // in one go), and that must not be undone when this stop completes.
+    const active = this.active;
     this.active = null;
     this.currentId = selectId;
     this.emit('track', this.current);
     this.emit('change', undefined);
+    await active?.stop().catch(() => {});
   }
 
   /** Ids in the order they will play. */
@@ -286,6 +310,7 @@ export class Player extends Emitter<PlayerEvents> {
     if (!this.active) return;
     const duration = this.duration;
     const clamped = Math.max(0, duration > 0 ? Math.min(seconds, duration - 0.25) : seconds);
+    this.nearEndSince = null;
     await this.active.seek(clamped).catch(() => {});
     this.emit('change', undefined);
   }
@@ -294,7 +319,34 @@ export class Player extends Emitter<PlayerEvents> {
     await this.seek(this.position + delta);
   }
 
+  /**
+   * Safety net for players that don't report the end of a track, or report it
+   * in a way we don't recognise: if playback has sat at the very end for a
+   * few seconds, and the user didn't pause it there, move on.
+   */
+  private watchEnd() {
+    const id = this.currentId;
+    if (!this.active || !id || this.loading || this.endedHandledFor === id) {
+      this.nearEndSince = null;
+      return;
+    }
+    const duration = this.duration;
+    const position = this.position;
+    if (!(duration > 1)) return;
+    if (position >= duration - 1.5) this.nearEndSince ??= performance.now();
+    else if (this.playing && position < duration - 3) this.nearEndSince = null;
+    if (this.nearEndSince !== null && !this.userPaused && performance.now() - this.nearEndSince > 3500) {
+      debug('player', `"${this.current?.title}" reached its end without the player saying so; moving on`);
+      this.onEnded();
+    }
+  }
+
   private onEnded() {
+    const id = this.currentId;
+    if (id !== null && this.endedHandledFor === id) return;
+    this.endedHandledFor = id;
+    this.nearEndSince = null;
+    debug('player', `"${this.current?.title}" ended`);
     if (this.repeat === 'one' && this.current) {
       void this.playTrack(this.current.id);
       return;
