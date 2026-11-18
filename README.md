@@ -9,6 +9,16 @@ A music player for the browser whose main attraction is its visualizers. Put mus
 - **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, a visualizer gallery, auto-cycling with crossfades.
 - **Stack:** Vite + TypeScript, raw WebGL2, Web Audio. No backend and no framework. Runs in Chrome or Edge.
 
+## Version 2 (this branch, in progress)
+
+This is the `v2` branch. The `v1` branch keeps the first version unchanged. V2 is being built in stages; what has landed so far:
+
+- **Songs move on by themselves.** When a Spotify song finished, the next one in the queue didn't start until you pressed skip. Spotify's player only reports when something changes, so a song that played through untouched never gave Phosphor the end signal it was waiting for. Phosphor now recognises the end in several independent ways (including Spotify's own autoplay taking over, Spotify swapping in another copy of a song, and Spotify saying nothing at all). A safety net moves any source on if it sits at the very end without reporting it.
+- **Now Playing shows the track.** On macOS, Phosphor's Now Playing entry showed the tab title (e.g. "Rise · Lynnic — Phosphor") with no artist or artwork while Spotify or YouTube played. Their players live in embedded frames that claim the media keys without setting any track info, and Chrome was showing that frame's empty entry. Phosphor now keeps its own page in charge, so Now Playing shows the title, artist and artwork, and media keys control Phosphor's queue. In the browser the entry still carries Chrome's icon; the desktop app planned for later will show Phosphor's own.
+- **Diagnostics.** Open **http://127.0.0.1:5173/?debug** to log playback events to the browser console (see [Troubleshooting](#troubleshooting)).
+
+Still to come: the streaming services on the first screen, browsing each service, Phosphor playlists, better beat tracking, more visualizers, crossfade and mix transitions, and desktop and phone apps.
+
 ## Quick start
 
 ```bash
@@ -157,6 +167,7 @@ On a Mac, the first system-audio share makes macOS ask whether Chrome may record
 - **The visuals move but there's no sound.** Use Chrome or Edge. Safari and Firefox block sound more strictly, and can't capture audio at all. The app now unlocks sound on your first click or key press and tells you if the browser is still holding it back; clicking anywhere on the page fixes that. Also check the volume slider and the mute key (<kbd>M</kbd>).
 - **System audio on a Mac picks up nothing.** See the macOS permission note above. "Also share system audio" only appears on macOS 14.2+ with Chrome or Edge 141+; on older versions, share the Chrome tab that is playing instead.
 - **"Also share … audio" was off.** Share again and switch it on; the app explains what was missing when a share arrives without sound.
+- **A streaming service misbehaves** (a song doesn't move on, playback stops, something looks wrong). Open **http://127.0.0.1:5173/?debug** (it's remembered; `?debug=0` turns it off), make the problem happen again, then open the browser console (**View → Developer → JavaScript Console** in Chrome on a Mac, or **Ctrl+Shift+J** on Windows) and copy the lines starting with `[phosphor:`. They show what each player reported and what Phosphor made of it.
 
 ## Streaming services
 
@@ -234,10 +245,10 @@ npm run dev
 ```
 
 ```bash
-xvfb-run -a npm run verify
+xvfb-run -a dbus-run-session -- npm run verify
 ```
 
-(`xvfb-run` is only needed on a machine without a display. The script needs [Playwright](https://playwright.dev) with Chromium and ffmpeg on the PATH.)
+(`xvfb-run` is only needed on a machine without a display. `dbus-run-session` gives Chromium a D-Bus session on Linux, where it publishes its media session the same way macOS Now Playing receives it; with it, the Now Playing and media-key checks run, and without it they're skipped. The script needs [Playwright](https://playwright.dev) with Chromium and ffmpeg on the PATH.)
 
 It checks:
 
@@ -263,7 +274,8 @@ It checks:
   Small numbers mean a localised change (one group of bars, a ring), not a weak one. \*MilkDrop presets detect beats from the waveform themselves, so withholding Phosphor's beat signal changes nothing; their bass response covers it.
 - **Player and interface:** tags and art from each format, decoding each format, every keyboard shortcut, crossfades, the gallery, auto-cycle, queue editing, drag and drop, folders with cover images, an undecodable file, the idle fade, fullscreen, the demo track, settings persistence.
 - **Capture:** real `getDisplayMedia` capture of another tab and of the app's own tab, including that the captured audio has no path to the speakers.
-- **Spotify, Apple Music, YouTube:** each against a local simulation of the service (in `scripts/mocks`) that follows the documented behaviour: OAuth with real PKCE verification, the Web API's 2026 response shapes, the playback SDK's events, MusicKit's queue and events, the IFrame API's states and errors, the Data API with quotas and pagination. These prove Phosphor's side of each integration. They cannot prove the real services behave as documented; see below.
+- **Spotify, Apple Music, YouTube:** each against a local simulation of the service (in `scripts/mocks`) that follows the documented behaviour: OAuth with real PKCE verification, the Web API's 2026 response shapes, the playback SDK's events, MusicKit's queue and events, the IFrame API's states and errors, the Data API with quotas and pagination. Like the real players, the simulated Spotify and YouTube players run inside cross-origin frames, and Spotify's reports state only when something changes. Songs are played all the way to their end on each service, including Spotify's quirks (autoplay, relinked songs, a silent end). These prove Phosphor's side of each integration. They cannot prove the real services behave as documented; see below.
+- **Now Playing and media keys:** what Chromium tells the operating system is playing (title, artist, artwork, playing or paused) for local files, Spotify and YouTube, and the Next, Pause and Play media keys, read and pressed through Chromium's MPRIS interface on Linux.
 
 ## Status
 
