@@ -15,7 +15,7 @@ import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import { appBaseUrl, settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
-import type { MusicService, SearchResults, ServiceStatus } from './types';
+import type { MusicService, SearchResults, ServiceStatus, Shelf } from './types';
 
 const ACCOUNTS = 'https://accounts.spotify.com';
 const API = 'https://api.spotify.com/v1';
@@ -29,10 +29,18 @@ const SCOPES = [
   'playlist-read-private',
   'playlist-read-collaborative',
   'user-library-read',
+  // Added in Phosphor 2 for the Spotify home and saving to your library.
+  // Older sign-ins lack them; the home offers to reconnect.
+  'user-read-recently-played',
+  'user-top-read',
+  'user-library-modify',
+  'playlist-modify-public',
 ];
 
 const TOKENS_KEY = 'phosphor.spotify.tokens';
 const PENDING_KEY = 'phosphor.spotify.pending';
+/** Spotify-made playlists opened by link, kept for the home view. */
+const PINNED_KEY = 'phosphor.spotify.pinned';
 const CHANNEL = 'phosphor-auth';
 
 interface Tokens {
@@ -41,6 +49,8 @@ interface Tokens {
   /** Epoch milliseconds. */
   expiresAt: number;
   clientId: string;
+  /** The permissions Spotify granted, space separated (missing on sign-ins from before Phosphor 2). */
+  scope?: string;
 }
 
 interface PendingAuth {
@@ -68,7 +78,9 @@ interface SdkState {
   position: number;
   duration: number;
   timestamp: number;
-  track_window: { current_track: SdkTrack | null; previous_tracks: SdkTrack[] };
+  /** What Spotify is playing from: the playlist or album URI, when there is one. */
+  context?: { uri: string | null } | null;
+  track_window: { current_track: SdkTrack | null; previous_tracks: SdkTrack[]; next_tracks?: SdkTrack[] };
 }
 
 interface SdkPlayer {
@@ -78,6 +90,8 @@ interface SdkPlayer {
   pause(): Promise<void>;
   resume(): Promise<void>;
   seek(ms: number): Promise<void>;
+  nextTrack(): Promise<void>;
+  previousTrack(): Promise<void>;
   setVolume(volume: number): Promise<void>;
   activateElement(): Promise<void>;
   getCurrentState(): Promise<SdkState | null>;
@@ -110,7 +124,7 @@ interface ApiCollection {
   name: string;
   images?: ApiImage[] | null;
   artists?: { name: string }[];
-  owner?: { display_name?: string };
+  owner?: { id?: string; display_name?: string };
 }
 interface Page<T> {
   items: (T | null)[];
@@ -152,6 +166,7 @@ async function requestTokens(body: Record<string, string>, clientId: string): Pr
     access_token?: string;
     refresh_token?: string;
     expires_in?: number;
+    scope?: string;
     error?: string;
     error_description?: string;
   };
@@ -164,6 +179,7 @@ async function requestTokens(body: Record<string, string>, clientId: string): Pr
     refresh: data.refresh_token ?? body.refresh_token ?? '',
     expiresAt: Date.now() + (data.expires_in ?? 3600) * 1000,
     clientId,
+    scope: data.scope,
   };
 }
 
@@ -246,8 +262,12 @@ class SpotifyBackend implements Backend {
   }
   async stop() {
     this.service.expectUri = null;
+    this.service.expectContext = null;
     this.service.notePause();
     await this.service.sdk?.pause().catch(() => {});
+  }
+  skip(direction: 1 | -1) {
+    return this.service.skipInList(direction);
   }
 }
 
@@ -261,6 +281,8 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     "Spotify's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so Chrome asks to share the tab the first time you play a song each session (one click on Allow).",
     'Volume changes here are applied by Spotify before the audio is captured: at very low volume the visuals get less signal, and muting silences them. Use your system volume to listen quietly.',
     'Search returns up to 10 results of each kind (a limit Spotify applies to development-mode apps).',
+    "Spotify doesn't let apps list its own playlists (Discover Weekly, Daily Mixes, its editorial playlists) or read recommendations, new releases or charts. Paste a link to a Spotify-made playlist and Phosphor has Spotify play it as a whole: each song shows as it comes up, and Next and Previous move through it.",
+    'Saving to your Spotify library may be refused: since 2026 Spotify blocks changes from many personal (development-mode) apps. Playback is not affected.',
   ];
   readonly backend = new SpotifyBackend(this);
 
@@ -269,10 +291,15 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   volume = 0.8;
   /** The URI the player asked for; state events about anything else are ignored. */
   expectUri: string | null = null;
+  /** For a list Spotify plays itself (see Track.context): its URI, and the song it is on. */
+  expectContext: string | null = null;
+  contextSong: string | null = null;
+  /** Spotify has reported our list as the context at least once (so a report without it means it moved on). */
+  private contextSeen = false;
 
   private tokens: Tokens | null = readJson<Tokens>(TOKENS_KEY);
   private deviceId: string | null = null;
-  private account = '';
+  private accountName = '';
   private problem = '';
   private connecting: Promise<void> | null = null;
   private refreshing: Promise<string> | null = null;
@@ -328,7 +355,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     return {
       configured: this.clientId.length > 0,
       connected: Boolean(this.sdk && this.deviceId),
-      account: this.account || undefined,
+      account: this.accountName || undefined,
       problem: this.problem || undefined,
     };
   }
@@ -356,7 +383,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     await this.startSdk();
     try {
       const me = await this.api<{ display_name?: string; id: string; product?: string }>('/me');
-      this.account = me.display_name || me.id;
+      this.accountName = me.display_name || me.id;
       if (me.product && me.product !== 'premium') {
         this.setProblem('This Spotify account is not Premium, so Spotify will refuse to play in the browser.');
       }
@@ -409,7 +436,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     this.sdk = null;
     this.deviceId = null;
     this.tokens = null;
-    this.account = '';
+    this.accountName = '';
     this.last = null;
     this.problem = '';
     localStorage.removeItem(TOKENS_KEY);
@@ -514,6 +541,10 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     // Where we believed playback was just before this report.
     const believed = this.extrapolate();
     const events = this.backend.events;
+    if (this.expectContext) {
+      this.onContextState(state, current, believed);
+      return;
+    }
 
     if (this.isOurs(current)) {
       if (!this.actualUri && current.uri !== this.expectUri) debug('spotify', `relinked: playing ${current.uri} for ${this.expectUri}`);
@@ -539,6 +570,77 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
       void this.sdk?.pause().catch(() => {});
       this.finish('Spotify moved on to another track');
     }
+  }
+
+  /**
+   * State while Spotify plays a whole list for us. Songs changing is normal;
+   * the list is over when Spotify moves on to something else (its autoplay),
+   * or stops back at the start after the last song.
+   */
+  private onContextState(state: SdkState, current: SdkTrack, believed: number) {
+    const events = this.backend.events;
+    const reported = state.context?.uri ?? null;
+    if (reported === this.expectContext) this.contextSeen = true;
+    if ((reported && reported !== this.expectContext) || (!reported && this.contextSeen)) {
+      this.furthest = Math.max(this.furthest, believed);
+      if (this.sawPlaying) {
+        void this.sdk?.pause().catch(() => {});
+        this.finish('Spotify moved on from the list');
+      }
+      return;
+    }
+    if (current.uri !== this.contextSong) {
+      const previousDuration = this.last?.duration ?? 0;
+      this.furthest = Math.max(this.furthest, believed);
+      const recentlyOurs = performance.now() - this.pausedByUsAt < 2000;
+      if (this.contextSong && this.sawPlaying && state.paused && !state.loading && !recentlyOurs && this.nearEnd(previousDuration) && state.position < 1500) {
+        this.finish('the list ended');
+        return;
+      }
+      if (this.contextSong) debug('spotify', `list moved on to ${current.name}`);
+      this.contextSong = current.uri;
+      this.furthest = state.position;
+      events.meta?.({
+        title: current.name,
+        artist: current.artists.map((a) => a.name).join(', '),
+        album: current.album.name,
+        artworkUrl: current.album.images[0]?.url,
+        duration: state.duration / 1000,
+      });
+    }
+    this.furthest = Math.max(this.furthest, state.position);
+    this.last = state;
+    this.lastAt = performance.now();
+    if (!state.paused && !state.loading) this.sawPlaying = true;
+    if (this.looksFinishedInList(state)) {
+      this.finish('the list ended');
+      return;
+    }
+    events.meta?.({ duration: state.duration / 1000 });
+    if (!state.loading) events.state?.(!state.paused);
+  }
+
+  /** The last song of a list ended and Spotify stopped on it rather than wrapping round. */
+  private looksFinishedInList(state: SdkState): boolean {
+    if (!this.sawPlaying || !state.paused || state.loading || (state.track_window.next_tracks?.length ?? 0) > 0) return false;
+    const now = performance.now();
+    if (now - this.pausedByUsAt < 2000 || now - this.seekedAt < 1500) return false;
+    return (state.position < 1500 || state.position >= state.duration - 1500) && this.nearEnd(state.duration);
+  }
+
+  /** Moves within a list Spotify is playing. False when there's nowhere to go. */
+  async skipInList(direction: 1 | -1): Promise<boolean> {
+    if (!this.expectContext || !this.sdk) return false;
+    const state = (await this.sdk.getCurrentState().catch(() => null)) ?? this.last;
+    const window = state?.track_window;
+    if (!window) return false;
+    if (direction === 1 ? !window.next_tracks?.length : !window.previous_tracks.length) return false;
+    debug('spotify', `skip ${direction === 1 ? 'forward' : 'back'} within the list`);
+    // A skip briefly reads as paused at 0, like the end of the list.
+    this.notePause();
+    this.furthest = 0;
+    await (direction === 1 ? this.sdk.nextTrack() : this.sdk.previousTrack());
+    return true;
   }
 
   private isOurs(track: SdkTrack | null | undefined): boolean {
@@ -597,7 +699,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
       this.onState(fresh);
       // Still claiming to play our track right at its end: trust the clock.
       const current = fresh.track_window.current_track;
-      if (!fresh.paused && this.isOurs(current) && fresh.position >= fresh.duration - 500) this.finish('it sat at the end');
+      if (!this.expectContext && !fresh.paused && this.isOurs(current) && fresh.position >= fresh.duration - 500) this.finish('it sat at the end');
     } catch {
       /* try again next second */
     } finally {
@@ -637,6 +739,9 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     if (!track.ref) throw new Error('missing Spotify URI');
     if (!this.sdk || !this.deviceId) await this.connect();
     this.expectUri = track.ref;
+    this.expectContext = track.context ? track.ref : null;
+    this.contextSong = null;
+    this.contextSeen = false;
     this.expectTitle = track.title;
     this.actualUri = null;
     this.endedFor = null;
@@ -650,7 +755,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     const start = () =>
       this.api(`/me/player/play?device_id=${encodeURIComponent(this.deviceId ?? '')}`, {
         method: 'PUT',
-        body: JSON.stringify({ uris: [track.ref] }),
+        body: JSON.stringify(this.expectContext ? { context_uri: track.ref } : { uris: [track.ref] }),
       });
     try {
       await start();
@@ -761,6 +866,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   }
 
   async tracksOf(collection: Collection): Promise<Track[]> {
+    if (collection.contextOnly) return [this.listTrack(collection)];
     const keep = (list: (Track | null)[]) => list.filter((t): t is Track => t !== null);
     if (collection.kind === 'album') {
       const tracks = await this.pages<ApiTrack>(`/albums/${collection.id}/tracks`);
@@ -776,9 +882,189 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     } catch (error) {
       // Apps not yet migrated to the February 2026 API still use the old path.
       if (!/404|not found/i.test((error as Error).message)) throw error;
-      entries = await this.pages<Entry>(`/playlists/${collection.id}/tracks`);
+      try {
+        entries = await this.pages<Entry>(`/playlists/${collection.id}/tracks`);
+      } catch (again) {
+        // A Spotify-made playlist: apps may not list it, but Spotify will play it.
+        if (!/40[34]|not found/i.test((again as Error).message)) throw again;
+        return [this.listTrack(collection)];
+      }
     }
     return keep(entries.map((e) => this.toTrack(e.item ?? e.track)));
+  }
+
+  /** A queue item that has Spotify play a whole list (see Track.context). */
+  private listTrack(collection: Collection): Track {
+    return {
+      id: newTrackId('spotify'),
+      source: 'spotify',
+      ref: `spotify:${collection.kind}:${collection.id}`,
+      title: collection.title,
+      artist: 'Played by Spotify',
+      artworkUrl: collection.artworkUrl,
+      context: { title: collection.title, artworkUrl: collection.artworkUrl },
+    };
+  }
+
+  /** A list Spotify won't describe through the API. Its public embed page still gives the name and cover. */
+  private async listOnly(kind: 'playlist' | 'album', id: string): Promise<Collection> {
+    type Embed = { title?: string; thumbnail_url?: string };
+    let info: Embed = {};
+    try {
+      const response = await fetch(`https://open.spotify.com/oembed?${new URLSearchParams({ url: `https://open.spotify.com/${kind}/${id}` })}`);
+      if (response.ok) info = (await response.json()) as Embed;
+    } catch {
+      /* the name is cosmetic */
+    }
+    return {
+      id,
+      source: 'spotify',
+      kind,
+      title: info.title || 'Spotify playlist',
+      subtitle: 'Made by Spotify · plays as a whole',
+      artworkUrl: info.thumbnail_url,
+      contextOnly: true,
+    };
+  }
+
+  // ------------------------------------------------------------- home
+
+  /** Spotify-made playlists opened by link, newest first. */
+  pinned(): Collection[] {
+    return readJson<Collection[]>(PINNED_KEY) ?? [];
+  }
+
+  private pin(collection: Collection) {
+    const list = [collection, ...this.pinned().filter((c) => c.id !== collection.id)].slice(0, 16);
+    localStorage.setItem(PINNED_KEY, JSON.stringify(list));
+  }
+
+  unpin(id: string) {
+    localStorage.setItem(PINNED_KEY, JSON.stringify(this.pinned().filter((c) => c.id !== id)));
+  }
+
+  /** First page of a list, retrying with the smaller page size development-mode apps may be held to. */
+  private async firstPage<T>(path: string, limit: number): Promise<T[]> {
+    const join = path.includes('?') ? '&' : '?';
+    let page: Page<T>;
+    try {
+      page = await this.api<Page<T>>(`${path}${join}limit=${limit}`);
+    } catch (error) {
+      if (limit <= 10 || !/limit|400/i.test((error as Error).message)) throw error;
+      page = await this.api<Page<T>>(`${path}${join}limit=10`);
+    }
+    return (page.items ?? []).filter((x): x is T => x !== null);
+  }
+
+  private hasScope(scope: string): boolean {
+    // Sign-ins from before Phosphor 2 didn't record what was granted: just try.
+    return this.tokens?.scope === undefined || this.tokens.scope.split(' ').includes(scope);
+  }
+
+  async home(): Promise<Shelf[]> {
+    const reconnect = 'Phosphor needs one more permission from Spotify for this. Reconnect to allow it.';
+    const shelf = async (title: string, scope: string | null, load: () => Promise<Partial<Shelf>>): Promise<Shelf> => {
+      if (scope && !this.hasScope(scope)) return { title, note: reconnect, needsReconnect: true };
+      try {
+        return { title, ...(await load()) };
+      } catch (error) {
+        const message = (error as Error).message;
+        if (/scope|\(403\)/i.test(message)) return { title, note: reconnect, needsReconnect: true };
+        return { title, note: `Couldn't load this: ${message}` };
+      }
+    };
+    type Played = { track: ApiTrack | null; context: { type: string; uri: string } | null };
+    const recent = this.hasScope('user-read-recently-played') ? this.firstPage<Played>('/me/player/recently-played', 50) : Promise.resolve([]);
+    recent.catch(() => {});
+    const keep = <T>(list: (T | null)[]): T[] => list.filter((x): x is T => x !== null);
+    const pinned = this.pinned();
+
+    return Promise.all([
+      shelf('Recently played', 'user-read-recently-played', async () => {
+        const seen = new Set<string>();
+        const tracks = keep((await recent).map((p) => (p.track && !seen.has(p.track.uri) && seen.add(p.track.uri) ? this.toTrack(p.track) : null)));
+        return { tracks: tracks.slice(0, 20) };
+      }),
+      shelf('Jump back in', 'user-read-recently-played', async () => {
+        const contexts = [...new Set((await recent).map((p) => p.context?.uri).filter((uri): uri is string => Boolean(uri)))];
+        const lists = contexts
+          .map((uri) => /^spotify:(album|playlist):([A-Za-z0-9]+)$/.exec(uri))
+          .filter((m): m is RegExpExecArray => m !== null)
+          .slice(0, 8);
+        const found = await Promise.all(lists.map(([, kind, id]) => this.describeList(kind as 'album' | 'playlist', id).catch(() => null)));
+        return { collections: keep(found) };
+      }),
+      shelf('Your top songs this month', 'user-top-read', async () => ({
+        tracks: keep((await this.firstPage<ApiTrack>('/me/top/tracks?time_range=short_term', 20)).map((t) => this.toTrack(t))),
+      })),
+      shelf('Your playlists', null, async () => ({ collections: await this.library() })),
+      shelf('Saved albums', null, async () => ({
+        collections: keep((await this.firstPage<{ album: ApiCollection }>('/me/albums', 20)).map((e) => this.toCollection(e.album, 'album'))),
+      })),
+      shelf('Spotify-made playlists', null, async () => ({
+        collections: pinned,
+        note: pinned.length
+          ? 'Opened from links. Spotify plays these itself; Phosphor shows each song as it comes up.'
+          : "Spotify doesn't let apps list its own playlists (Discover Weekly, Daily Mixes, editorial playlists). Paste a link to one above and Phosphor has Spotify play it as a whole. It will be kept here.",
+      })),
+    ]);
+  }
+
+  /** Name and cover of an album or playlist; Spotify-made playlists come back as play-as-a-whole lists. */
+  private async describeList(kind: 'album' | 'playlist', id: string): Promise<Collection | null> {
+    try {
+      const data = await this.api<ApiCollection>(`/${kind}s/${id}`);
+      return this.toCollection(data, kind);
+    } catch (error) {
+      if (kind === 'playlist' && /40[34]|not found/i.test((error as Error).message)) return this.listOnly('playlist', id);
+      throw error;
+    }
+  }
+
+  // ------------------------------------------------------------ library
+
+  /** The URI to save: for a list Spotify is playing, the song playing now. */
+  private uriOf(item: Track | Collection): string {
+    if ('kind' in item) {
+      if (item.id === 'liked') throw new Error('Liked Songs is already your library.');
+      return `spotify:${item.kind}:${item.id}`;
+    }
+    if (item.context && item.ref === this.expectContext && this.contextSong) return this.contextSong;
+    if (!item.ref) throw new Error('missing Spotify URI');
+    return item.ref;
+  }
+
+  canSave(item: Track | Collection): boolean {
+    return !('kind' in item && item.id === 'liked');
+  }
+
+  async saveToLibrary(item: Track | Collection): Promise<void> {
+    const uri = this.uriOf(item);
+    try {
+      await this.api(`/me/library?${new URLSearchParams({ uris: uri })}`, { method: 'PUT' });
+    } catch (error) {
+      const message = (error as Error).message;
+      if (/scope/i.test(message)) throw new Error('Phosphor needs one more permission to save to your library. Reconnect Spotify (Add music, Spotify) and try again.');
+      if (/\(403\)/.test(message)) {
+        throw new Error("Spotify refused to save it (403). Since 2026 Spotify blocks changes from many personal (development-mode) apps; save it in the Spotify app instead.");
+      }
+      throw error;
+    }
+    debug('spotify', `saved ${uri}`);
+  }
+
+  async isSaved(item: Track | Collection): Promise<boolean> {
+    const uri = this.uriOf(item);
+    const answer = await this.api<boolean[]>(`/me/library/contains?${new URLSearchParams({ uris: uri })}`);
+    return Array.isArray(answer) && answer[0] === true;
+  }
+
+  /** Signs in again so Spotify asks for the permissions added since the last sign-in. */
+  async reconnect(): Promise<void> {
+    if (!this.clientId) throw new Error('Add your Spotify Client ID in Settings first.');
+    await this.authorize();
+    if (!this.sdk) await this.startSdk();
+    this.emit('status', undefined);
   }
 
   async resolveLink(url: string): Promise<SearchResults | null> {
@@ -791,8 +1077,8 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
       const track = this.toTrack(await this.api<ApiTrack>(`/tracks/${id}`));
       return { tracks: track ? [track] : [], collections: [] };
     }
-    const data = await this.api<ApiCollection>(`/${kind}s/${id}`);
-    const collection = this.toCollection(data, kind as 'album' | 'playlist');
+    const collection = await this.describeList(kind as 'album' | 'playlist', id);
+    if (collection?.contextOnly) this.pin(collection);
     return { tracks: [], collections: collection ? [collection] : [] };
   }
 }

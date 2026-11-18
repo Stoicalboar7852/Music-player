@@ -9,7 +9,7 @@ import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import { settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
-import type { MusicService, SearchResults, ServiceStatus } from './types';
+import type { MusicService, SearchResults, ServiceStatus, Shelf } from './types';
 
 const SDK_URL = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js';
 
@@ -26,15 +26,35 @@ interface MkResource {
     durationInMillis?: number;
     artwork?: { url?: string };
     playParams?: { id?: string };
+    /** Recommendations: the group's heading. */
+    title?: { stringForDisplay?: string };
   };
+  relationships?: { contents?: { data?: MkResource[] } };
+}
+
+/** A chart: one entry of a charts response, e.g. "Top Songs". */
+interface MkChart {
+  name?: string;
+  data?: MkResource[];
 }
 
 interface MkResponse {
   data: {
     data?: MkResource[];
     next?: string;
-    results?: Record<string, { data?: MkResource[] } | undefined>;
+    results?: Record<string, { data?: MkResource[] } | MkChart[] | undefined>;
   };
+}
+
+/** The song MusicKit is playing, as nowPlayingItem gives it. */
+interface MkMediaItem {
+  id?: string;
+  title?: string;
+  artistName?: string;
+  albumName?: string;
+  playbackDuration?: number;
+  artwork?: { url?: string };
+  attributes?: MkResource['attributes'];
 }
 
 interface MkInstance {
@@ -49,12 +69,15 @@ interface MkInstance {
   authorize(): Promise<string | void>;
   unauthorize(): Promise<void>;
   setQueue(options: Record<string, unknown>): Promise<unknown>;
+  nowPlayingItem?: MkMediaItem | null;
+  skipToNextItem(): Promise<void>;
+  skipToPreviousItem(): Promise<void>;
   play(): Promise<void>;
   pause(): Promise<void> | void;
   stop(): Promise<void> | void;
   seekToTime(seconds: number): Promise<void>;
   addEventListener(name: string, listener: (event: never) => void): void;
-  api: { music(path: string, params?: Record<string, unknown>): Promise<MkResponse> };
+  api: { music(path: string, params?: Record<string, unknown>, options?: { fetchOptions?: RequestInit }): Promise<MkResponse> };
 }
 
 interface MkGlobal {
@@ -119,7 +142,11 @@ class AppleBackend implements Backend {
   }
   async stop() {
     this.service.active = false;
+    this.service.station = null;
     await this.service.music?.stop();
+  }
+  async skip(direction: 1 | -1) {
+    return this.service.skipInStation(direction);
   }
 }
 
@@ -133,6 +160,7 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
     "You sign in in Apple's own window; this app never sees your Apple ID.",
     "Apple Music's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so Chrome asks to share the tab the first time you play a song each session (one click on Allow).",
     'Volume is applied by Apple before the audio is captured, so very low volume gives the visuals less to work with. Use your system volume to listen quietly.',
+    'Stations play as a whole, the way Apple runs them: each song shows as it comes up, and Next moves on within the station.',
   ];
   readonly backend = new AppleBackend(this);
 
@@ -140,6 +168,8 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
   volume = 0.8;
   /** True while the shared player wants Apple Music to be the thing playing. */
   active = false;
+  /** The station being played, when the current queue item is one (see Track.context). */
+  station: string | null = null;
 
   private configuredToken = '';
   private problem = '';
@@ -253,7 +283,8 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
         events.state?.(true);
       } else if (state === S.paused) {
         events.state?.(false);
-      } else if ((state === S.ended || state === S.completed) && !this.endedSent) {
+      } else if ((state === S.completed || (state === S.ended && !this.station)) && !this.endedSent) {
+        // A station moves through songs on its own; only the queue running out is an end.
         this.endedSent = true;
         events.ended?.();
       }
@@ -265,6 +296,19 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
       if (this.active) events.error?.(error?.message || error?.errorCode || 'Apple Music could not play this');
     });
     music.addEventListener('authorizationStatusDidChange', () => this.emit('status', undefined));
+    // A station moves from song to song by itself: show whichever is playing.
+    music.addEventListener('nowPlayingItemDidChange', () => {
+      const item = music.nowPlayingItem;
+      if (!this.active || !this.station || !item) return;
+      const a = item.attributes;
+      events.meta?.({
+        title: item.title ?? a?.name,
+        artist: item.artistName ?? a?.artistName,
+        album: item.albumName ?? a?.albumName,
+        artworkUrl: artworkUrl(item.artwork ?? a?.artwork),
+        duration: item.playbackDuration ? item.playbackDuration / 1000 : a?.durationInMillis ? a.durationInMillis / 1000 : undefined,
+      });
+    });
   }
 
   async playSong(track: Track) {
@@ -274,8 +318,16 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
     this.active = true;
     this.endedSent = true; // ignore the old song's "ended" while the new one loads
     music.volume = this.volume;
-    await music.setQueue({ song: track.ref, startPlaying: true });
+    this.station = track.context ? track.ref : null;
+    await music.setQueue(this.station ? { station: this.station, startPlaying: true } : { song: track.ref, startPlaying: true });
     this.endedSent = false;
+  }
+
+  /** Next within a station. Stations have no way back, so Previous moves through the queue. */
+  async skipInStation(direction: 1 | -1): Promise<boolean> {
+    if (!this.station || !this.music || direction === -1) return false;
+    await this.music.skipToNextItem();
+    return true;
   }
 
   // ---------------------------------------------------------------- data
@@ -323,16 +375,18 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
 
   private toCollection(r: MkResource): Collection | null {
     const a = r.attributes;
-    if (!a?.name) return null;
+    if (!a?.name || !['albums', 'playlists', 'stations', 'library-albums', 'library-playlists'].includes(r.type)) return null;
     const kind = r.type.includes('album') ? 'album' : 'playlist';
+    const station = r.type === 'stations';
     return {
       // The resource type is needed to build the right URL later (catalog vs. library).
       id: `${r.type}:${r.id}`,
       source: 'apple',
       kind,
       title: a.name,
-      subtitle: kind === 'album' ? a.artistName : a.curatorName ? `Playlist by ${a.curatorName}` : 'Playlist',
+      subtitle: station ? 'Station · plays as a whole' : kind === 'album' ? a.artistName : a.curatorName ? `Playlist by ${a.curatorName}` : 'Playlist',
       artworkUrl: artworkUrl(a.artwork),
+      contextOnly: station || undefined,
     };
   }
 
@@ -342,7 +396,10 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
 
   async search(query: string): Promise<SearchResults> {
     const data = await this.get(`/v1/catalog/${this.storefront()}/search`, { term: query, types: 'songs,albums,playlists', limit: 20 });
-    const pick = (key: string) => data.results?.[key]?.data ?? [];
+    const pick = (key: string): MkResource[] => {
+      const group = data.results?.[key];
+      return group && !Array.isArray(group) ? (group.data ?? []) : [];
+    };
     const keep = <T>(list: (T | null)[]): T[] => list.filter((x): x is T => x !== null);
     return {
       tracks: keep(pick('songs').map((r) => this.toTrack(r))),
@@ -355,8 +412,112 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
     return playlists.map((r) => this.toCollection(r)).filter((c): c is Collection => c !== null);
   }
 
+  /** Albums, playlists and stations from a mixed list, in order. */
+  private collections(resources: MkResource[] | undefined): Collection[] {
+    return (resources ?? []).map((r) => this.toCollection(r)).filter((c): c is Collection => c !== null);
+  }
+
+  async home(): Promise<Shelf[]> {
+    const sf = this.storefront();
+    const shelf = async (title: string, load: () => Promise<Partial<Shelf>>): Promise<Shelf> => {
+      try {
+        return { title, ...(await load()) };
+      } catch (error) {
+        return { title, note: `Couldn't load this: ${(error as Error).message}` };
+      }
+    };
+    const keepTracks = (list: MkResource[] | undefined) => (list ?? []).map((r) => this.toTrack(r)).filter((t): t is Track => t !== null);
+    const charts = this.get(`/v1/catalog/${sf}/charts`, { types: 'songs,albums,playlists', limit: 20 });
+    charts.catch(() => {});
+    const chart = async (type: string) => {
+      const list = (await charts).results?.[type];
+      return Array.isArray(list) ? list[0] : undefined;
+    };
+
+    // "For you" groups come as a list of headed rows; show the first few.
+    let forYou: Shelf[] = [];
+    try {
+      const recommendations = (await this.get('/v1/me/recommendations', { limit: 6 })).data ?? [];
+      forYou = recommendations
+        .map((group) => ({ title: group.attributes?.title?.stringForDisplay ?? 'For you', collections: this.collections(group.relationships?.contents?.data) }))
+        .filter((group) => group.collections.length > 0)
+        .slice(0, 4);
+    } catch (error) {
+      forYou = [{ title: 'For you', note: `Couldn't load recommendations: ${(error as Error).message}` }];
+    }
+
+    const rest = await Promise.all([
+      shelf('Recently played', async () => ({ collections: this.collections((await this.get('/v1/me/recent/played', { limit: 10 })).data) })),
+      shelf('Recently played songs', async () => ({ tracks: keepTracks((await this.get('/v1/me/recent/played/tracks', { types: 'songs', limit: 20 })).data) })),
+      shelf('Heavy rotation', async () => ({ collections: this.collections((await this.get('/v1/me/history/heavy-rotation', { limit: 10 })).data) })),
+      shelf('Top songs', async () => {
+        const top = await chart('songs');
+        return { title: top?.name ?? 'Top songs', tracks: keepTracks(top?.data) };
+      }),
+      shelf('Top albums', async () => {
+        const top = await chart('albums');
+        return { title: top?.name ?? 'Top albums', collections: this.collections(top?.data) };
+      }),
+      shelf('Top playlists', async () => {
+        const top = await chart('playlists');
+        return { title: top?.name ?? 'Top playlists', collections: this.collections(top?.data) };
+      }),
+      shelf('Your playlists', async () => ({ collections: await this.library() })),
+      shelf('Your albums', async () => ({ collections: this.collections((await this.get('/v1/me/library/albums', { limit: 25 })).data) })),
+    ]);
+    return [...forYou, ...rest];
+  }
+
+  canSave(item: Track | Collection): boolean {
+    if ('kind' in item) return !/^(library-|stations:)/.test(item.id);
+    return !item.ref?.startsWith('i.') && (!item.context || this.station === item.ref);
+  }
+
+  /** Adds a catalog song, album or playlist to the user's library. */
+  async saveToLibrary(item: Track | Collection): Promise<void> {
+    let type: string;
+    let id: string;
+    if ('kind' in item) {
+      const [resource, ref] = item.id.split(':');
+      if (resource.startsWith('library-')) throw new Error(`"${item.title}" is already in your library.`);
+      if (resource === 'stations') throw new Error("Stations can't be added to a library.");
+      type = resource;
+      id = ref;
+    } else {
+      if (item.context) {
+        const playing = this.station === item.ref ? this.music?.nowPlayingItem : null;
+        if (!playing?.id) throw new Error("Stations can't be added to a library; save the song while it plays.");
+        id = playing.id;
+      } else {
+        id = item.ref ?? '';
+      }
+      if (id.startsWith('i.')) throw new Error(`"${item.title}" is already in your library.`);
+      type = 'songs';
+    }
+    if (!this.music) await this.connect();
+    try {
+      await this.music!.api.music('/v1/me/library', { [`ids[${type}]`]: id }, { fetchOptions: { method: 'POST' } });
+    } catch (error) {
+      throw new Error(`Apple Music didn't add it: ${(error as Error).message ?? 'request failed'}`);
+    }
+    debug('apple', `added ${type} ${id} to the library`);
+  }
+
   async tracksOf(collection: Collection): Promise<Track[]> {
     const [type, id] = collection.id.split(':');
+    if (type === 'stations') {
+      return [
+        {
+          id: newTrackId('apple'),
+          source: 'apple',
+          ref: id,
+          title: collection.title,
+          artist: 'Apple Music station',
+          artworkUrl: collection.artworkUrl,
+          context: { title: collection.title, artworkUrl: collection.artworkUrl },
+        },
+      ];
+    }
     const base = type.startsWith('library-') ? `/v1/me/library/${type.slice(8)}` : `/v1/catalog/${this.storefront()}/${type}`;
     const songs = await this.all(`${base}/${id}/tracks`);
     return songs.map((r) => this.toTrack(r, collection.artworkUrl)).filter((t): t is Track => t !== null);

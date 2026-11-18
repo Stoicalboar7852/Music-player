@@ -23,6 +23,13 @@ export interface Track {
   handle?: FileSystemFileHandle;
   /** Streaming tracks: the service's own identifier (Spotify URI, Apple song id, YouTube video id). */
   ref?: string;
+  /**
+   * Set when the item stands for a whole list the service plays itself: a
+   * Spotify-made playlist that apps aren't allowed to list, or an Apple Music
+   * station. The track's title, artist and artwork then follow whatever song
+   * the service is playing, and Next/Previous move within the list first.
+   */
+  context?: { title: string; artworkUrl?: string };
 }
 
 /** An album or playlist on a streaming service. */
@@ -33,6 +40,8 @@ export interface Collection {
   title: string;
   subtitle?: string;
   artworkUrl?: string;
+  /** The service won't list its songs to apps, but can play it as a whole (see Track.context). */
+  contextOnly?: boolean;
 }
 
 /** Callbacks a backend uses to tell the player what happened. */
@@ -62,6 +71,11 @@ export interface Backend {
   position(): number;
   duration(): number;
   stop(): Promise<void>;
+  /**
+   * For a context track (a list the service plays itself): move within that
+   * list. Returns false when there is nowhere to go, so the queue moves on.
+   */
+  skip?(direction: 1 | -1): Promise<boolean>;
 }
 
 let counter = 0;

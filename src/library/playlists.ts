@@ -22,6 +22,8 @@ export interface SavedTrack {
   duration?: number;
   artworkUrl?: string;
   ref?: string;
+  /** A whole list the service plays itself (see Track.context). */
+  context?: { title: string; artworkUrl?: string };
   /** Local files: the key of the stored handle, if the browser gave one. */
   handleKey?: string;
   fileName?: string;
@@ -248,6 +250,10 @@ export class PlaylistLibrary extends Emitter<{ change: void }> {
       artworkUrl: track.artworkUrl,
       ref: track.ref,
     };
+    if (track.context) {
+      // Saved as the list itself, not whichever of its songs happened to be playing.
+      Object.assign(saved, { context: track.context, title: track.context.title, artworkUrl: track.context.artworkUrl, artist: undefined, album: undefined, duration: undefined });
+    }
     if (track.source === 'local') {
       saved.fileName = track.file?.name;
       saved.fileSize = track.file?.size;

@@ -13,7 +13,48 @@ export function createDock(app: App) {
   const title = h('div', { class: 'title' });
   const artist = h('div', { class: 'artist' });
   const source = h('div', { class: 'source' });
-  const now = h('div', { class: 'now' }, art, h('div', { class: 'meta' }, title, artist, source));
+
+  // Save the song that's playing to the user's library on its service, where the API allows.
+  let likeFor = '';
+  const setSaved = (saved: boolean, name: string) => {
+    like.classList.toggle('saved', saved);
+    setIcon(like, saved ? 'heartFilled' : 'heart', 18);
+    like.title = saved ? `In your ${name} library` : `Save to your ${name} library`;
+    like.setAttribute('aria-label', like.title);
+  };
+  const like = iconButton('heart', 'Save to your library', () => {
+    const track = player.current;
+    const service = track && app.services.find((s) => s.id === track.source);
+    if (!track || !service?.saveToLibrary || like.classList.contains('saved')) return;
+    like.disabled = true;
+    void service.saveToLibrary(track).then(
+      () => {
+        setSaved(true, service.name);
+        app.toast(`Saved "${track.title}" to your ${service.name} library`);
+      },
+      (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
+    ).finally(() => (like.disabled = false));
+  }, 'like-btn');
+  like.hidden = true;
+  const refreshLike = () => {
+    const track = player.current;
+    const service = track && app.services.find((s) => s.id === track.source);
+    const available = Boolean(track && service?.saveToLibrary && service.status().connected && service.canSave?.(track) !== false);
+    like.hidden = !available;
+    if (!available || !track || !service) return;
+    const key = `${track.id}|${track.title}`;
+    if (key === likeFor) return;
+    likeFor = key;
+    setSaved(false, service.name);
+    if (service.isSaved) {
+      void service.isSaved(track).then(
+        (saved) => likeFor === key && setSaved(saved, service.name),
+        () => {},
+      );
+    }
+  };
+
+  const now = h('div', { class: 'now' }, art, h('div', { class: 'meta' }, title, artist, source), like);
   artImg.addEventListener('error', () => (artImg.hidden = true));
 
   // ---- transport
@@ -82,7 +123,7 @@ export function createDock(app: App) {
     if (track) {
       title.textContent = track.title;
       artist.textContent = [track.artist, track.album].filter(Boolean).join(' — ') || 'Unknown artist';
-      source.textContent = SOURCE_NAMES[track.source];
+      source.textContent = track.context ? `${SOURCE_NAMES[track.source]} · ${track.context.title}` : SOURCE_NAMES[track.source];
     } else if (capture.state.active) {
       title.textContent = capture.state.label;
       artist.textContent = 'Listening to what is playing';
@@ -92,6 +133,7 @@ export function createDock(app: App) {
       artist.textContent = 'Add music or capture system audio';
       source.textContent = '';
     }
+    refreshLike();
     const artUrl = track?.artworkUrl;
     if (artUrl !== lastArt) {
       lastArt = artUrl;
@@ -136,6 +178,7 @@ export function createDock(app: App) {
   player.on('change', render);
   player.on('track', render);
   capture.on('change', render);
+  for (const service of app.services) service.onStatus(refreshLike);
   document.addEventListener('fullscreenchange', () => {
     setIcon(fullscreen, document.fullscreenElement ? 'exitFullscreen' : 'fullscreen');
   });

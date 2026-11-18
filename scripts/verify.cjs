@@ -110,7 +110,10 @@ function check(name, ok, detail = '') {
 }
 
 function watch(page, label) {
-  page.on('pageerror', (e) => check(`${label}: no uncaught page errors`, false, e.message.slice(0, 300)));
+  page.on('pageerror', (e) => check(`${label}: no uncaught page errors`, false, `${e.message.slice(0, 300)} @ ${(e.stack ?? '').split('\n').slice(1, 3).join(' | ').trim().slice(0, 300)}`));
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame() && page.__opened) console.log(`   [${label} navigated to ${frame.url().slice(0, 140)}]`);
+  });
   page.on('console', (m) => {
     if (m.type() !== 'error') return;
     const text = m.text();
@@ -139,6 +142,7 @@ async function open(context, label = 'app') {
   });
   await page.goto(URL_);
   await page.waitForFunction(() => window.__phosphor);
+  page.__opened = true;
   return page;
 }
 
@@ -392,7 +396,7 @@ async function player(browser) {
   await page.screenshot({ path: path.join(SHOTS, 'ui-queue.png') });
   const n0 = (await state(page)).queue.length;
   await page.hover('.drawer .row:last-child');
-  await page.click('.drawer .row:last-child .row-end .icon-btn');
+  await page.click('.drawer .row:last-child [title="Remove from queue"]');
   check('a track can be removed from the queue', (await state(page)).queue.length === n0 - 1);
   const firstTitle = (await state(page)).queue[0].title;
   await page.evaluate(() => window.__phosphor.player.move(0, 2));
@@ -799,7 +803,10 @@ async function spotify() {
   check('without a Client ID the panel says setup is needed', await page.isVisible('.tab-panel >> text=needs credentials'));
   check('...and the rest of the app is unaffected', (await svc()).configured === false && (await page.locator('.tab').count()) >= 3);
 
-  // ---- sign in through the real UI: popup -> redirect -> PKCE exchange
+  // ---- sign in through the real UI: popup -> redirect -> PKCE exchange.
+  // This first sign-in gets only the permissions Phosphor 1 asked for, like a
+  // user upgrading from it; the home view must cope and offer to reconnect.
+  mock.grantOnly(['streaming', 'user-read-email', 'user-read-private', 'user-read-playback-state', 'user-modify-playback-state', 'playlist-read-private', 'playlist-read-collaborative', 'user-library-read']);
   await page.evaluate(() => window.__phosphor.settings.set({ spotifyClientId: 'mock-client-id' }));
   await page.waitForSelector('.tab-panel >> text=Connect Spotify');
   await page.click('.tab-panel >> text=Connect Spotify');
@@ -813,6 +820,39 @@ async function spotify() {
   check('the signed-in account is shown', st.account === 'Mock Listener' && (await page.isVisible('.tab-panel >> text=Mock Listener')));
   check('the sign-in popup closed itself', context.pages().length === 1, `${context.pages().length} pages open`);
   check('the one-time code is not left in the address bar', !(await page.url()).includes('code='));
+
+  // ---- the Spotify home
+  const shelfCards = (title) => page.locator(`.shelf[data-shelf="${title}"] .media-card`);
+  const shelfTitles = (title) => page.$$eval(`.shelf[data-shelf="${title}"] .media-title`, (els) => els.map((e) => e.textContent));
+  await page.waitForSelector('.shelf[data-shelf="Your playlists"] .media-card', { timeout: 10000 }).catch(() => {});
+  check('the Spotify home lists your playlists and saved albums', (await shelfTitles('Your playlists')).join() === 'Liked Songs,Mock Mix' && (await shelfTitles('Saved albums')).join() === 'Stand-In Sessions', (await shelfTitles('Your playlists')).join());
+  check('shelves that need a newer permission offer to reconnect instead of failing', (await page.locator('.shelf[data-shelf="Recently played"] button:has-text("Reconnect Spotify")').count()) === 1 && (await shelfCards('Recently played').count()) === 0);
+  check("...without even asking Spotify for what the sign-in can't read", !mock.log.apiCalls.some((c) => c.includes('/me/player/recently-played') || c.includes('/me/top/')));
+  await page.click('.shelf[data-shelf="Recently played"] button:has-text("Reconnect Spotify")');
+  await page.waitForSelector('.shelf[data-shelf="Recently played"] .media-card', { timeout: 15000 }).catch(() => {});
+  const asked = (mock.log.authorize?.scope ?? '').split(' ');
+  check('reconnecting asks for the new permissions (recently played, top songs, saving)', ['user-read-recently-played', 'user-top-read', 'user-library-modify'].every((x) => asked.includes(x)), asked.join(' '));
+  check('recently played songs show, each once', (await shelfTitles('Recently played')).join() === 'Mock Song 2,Mock Song 3,Mock Song 4,Mock Song 6', (await shelfTitles('Recently played')).join());
+  const jump = await shelfTitles('Jump back in');
+  check('"Jump back in" shows the albums and playlists they came from, including a Spotify-made one', jump.join() === 'Stand-In Sessions,Mock Hits,Mock Mix', jump.join());
+  check("...the Spotify-made playlist is marked as one Spotify plays as a whole (its songs can't be listed)", await page.isVisible('.shelf[data-shelf="Jump back in"] .media-card:has-text("Mock Hits") .media-badge'));
+  check('your top songs show', (await shelfCards('Your top songs this month').count()) === 4);
+  check('the Spotify-made playlists shelf explains how to add one', await page.isVisible('.shelf[data-shelf="Spotify-made playlists"] >> text=Paste a link'));
+  await page.waitForFunction(() => [...document.querySelectorAll('.shelf .media-art img')].filter((img) => img.naturalWidth > 0).length >= 6, null, { timeout: 5000 }).catch(() => {});
+  await page.screenshot({ path: path.join(SHOTS, 'ui-spotify-home.png') });
+
+  // ---- save to your Spotify library (February 2026 endpoint: PUT /me/library with URIs)
+  await page.hover('.shelf[data-shelf="Recently played"] .media-card >> nth=0');
+  await page.click('.shelf[data-shelf="Recently played"] .media-card >> nth=0 >> [title^="Save to your Spotify library"]');
+  await page.waitForTimeout(500);
+  check('the heart on a song saves it to your Spotify library', mock.log.saved.includes('spotify:track:mock1') && (await page.locator('.shelf[data-shelf="Recently played"] .media-card >> nth=0 >> .icon-btn.saved').count()) === 1, mock.log.saved.join());
+  mock.refuseWrites(true);
+  await page.hover('.shelf[data-shelf="Recently played"] .media-card >> nth=1');
+  await page.click('.shelf[data-shelf="Recently played"] .media-card >> nth=1 >> [title^="Save to your Spotify library"]');
+  await page.waitForSelector('.toast.error', { timeout: 4000 }).catch(() => {});
+  const refusal = (await page.locator('.toast.error').last().textContent().catch(() => '')) ?? '';
+  check('if Spotify refuses changes from a development-mode app, that is explained', /refused to save it \(403\)/.test(refusal), refusal.slice(0, 90));
+  mock.refuseWrites(false);
 
   // ---- search
   await page.fill('input[type=search]', 'simulators');
@@ -973,6 +1013,67 @@ async function spotify() {
     console.log('   --   Now Playing checks skipped: run under dbus-run-session to include them');
   }
 
+  // ---- a Spotify-made playlist, which apps can't list: Spotify plays it as a whole
+  await page.evaluate(() => {
+    Object.assign(window, { __fakeSpotifyAutoplay: false, __fakeSpotifyRelink: false, __fakeSpotifySilentEnd: false });
+    window.__phosphor.player.clear();
+    window.__seenTitles = [];
+    window.__phosphor.player.on('track', (t) => t && window.__seenTitles.at(-1) !== t.title && window.__seenTitles.push(t.title));
+  });
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="spotify"]');
+  await page.fill('input[type=url]', 'https://open.spotify.com/playlist/37i9dQZF1DXmockHits?si=abc');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.collection-title', { timeout: 8000 }).catch(() => {});
+  check("a Spotify-made playlist link opens, named from Spotify's public embed info, though the API refuses it", (await page.textContent('.collection-title').catch(() => '')) === 'Mock Hits' && (await page.isVisible(".tab-panel >> text=doesn't let apps list the songs")));
+  await page.screenshot({ path: path.join(SHOTS, 'ui-spotify-made-playlist.png') });
+  await page.click('.collection-meta [title^="Save to your Spotify library"]');
+  await page.waitForTimeout(400);
+  check('...and it can be saved to your library as a playlist', mock.log.saved.includes('spotify:playlist:37i9dQZF1DXmockHits'), mock.log.saved.join());
+  const playsBefore = mock.log.playRequests.length;
+  await page.click('.collection-meta button:has-text("Play")');
+  await page.waitForFunction(() => window.__phosphor.player.current?.title === 'Short Song 1' && window.__phosphor.player.playing, null, { timeout: 10000 }).catch(() => {});
+  check('playing it asks Spotify to play the playlist itself (a context), not a list of songs', mock.log.playRequests.at(-1)?.context === 'spotify:playlist:37i9dQZF1DXmockHits' && !mock.log.playRequests.at(-1)?.uris, JSON.stringify(mock.log.playRequests.at(-1)));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  check("the song Spotify is playing shows as the title, with the playlist's name alongside", (await page.textContent('.dock .title')) === 'Short Song 1' && /Mock Hits/.test(await page.textContent('.dock .source')), await page.textContent('.dock .source'));
+  await page.keyboard.press('n');
+  await page.waitForFunction(() => window.__phosphor.player.current?.title === 'Short Song 2', null, { timeout: 8000 }).catch(() => {});
+  let st2 = await state(page);
+  check('Next moves within the playlist (Spotify skips; same queue item, no new play request)', st2.index === 0 && (await page.evaluate(() => window.__phosphor.player.current?.title)) === 'Short Song 2' && mock.log.playRequests.length === playsBefore + 1 && (await page.evaluate(() => window.__fakeSpotifySkips)) >= 1);
+  await page.click('.dock .like-btn');
+  await page.waitForTimeout(500);
+  check('the heart in the player saves the song playing now, not the playlist', mock.log.saved.includes('spotify:track:short2') && (await page.locator('.dock .like-btn.saved').count()) === 1, mock.log.saved.join());
+  await page.evaluate(async () => {
+    const service = window.__phosphor.app.services.find((x) => x.id === 'spotify');
+    window.__phosphor.player.add((await service.resolveLink('https://open.spotify.com/track/short1')).tracks);
+  });
+  const listEnded = await page
+    .waitForFunction(() => window.__phosphor.player.currentIndex === 1 && window.__phosphor.player.playing && window.__phosphor.player.position > 0.3, null, { timeout: 30000 })
+    .then(() => true, () => false);
+  const seen = await page.evaluate(() => window.__seenTitles);
+  check('the playlist plays through to its end, then Phosphor moves on to the next thing in its queue', listEnded && seen.includes('Short Song 3') && (await fakeTrack()) === 'spotify:track:short1', seen.join(' > '));
+  check("...and the heart was reset for a song that isn't saved", seen.includes('Short Song 3') && (await page.locator('.dock .like-btn.saved').count()) === 0);
+  // Spotify's autoplay after the last song is stopped, as for single songs.
+  await page.evaluate(async () => {
+    window.__fakeSpotifyAutoplay = true;
+    window.__fakeSpotifyRadioStarted = false;
+    const { player, app } = window.__phosphor;
+    const service = app.services.find((x) => x.id === 'spotify');
+    const list = (await service.resolveLink('https://open.spotify.com/playlist/37i9dQZF1DXmockHits')).collections[0];
+    player.clear();
+    player.add([...(await service.tracksOf(list)), ...(await service.resolveLink('https://open.spotify.com/track/short3')).tracks], { play: true });
+  });
+  await page.waitForFunction(() => window.__phosphor.player.current?.title === 'Short Song 1' && window.__phosphor.player.playing, null, { timeout: 10000 }).catch(() => {});
+  await page.keyboard.press('n');
+  await page.waitForTimeout(700);
+  await page.keyboard.press('n');
+  const afterAutoplay = await page
+    .waitForFunction(() => window.__phosphor.player.currentIndex === 1 && window.__phosphor.player.playing && window.__phosphor.player.position > 0.3, null, { timeout: 20000 })
+    .then(() => true, () => false);
+  check("when Spotify's autoplay takes over after the playlist, Phosphor stops it and plays its own next song", afterAutoplay && (await page.evaluate(() => window.__fakeSpotifyRadioStarted)) && (await fakeTrack()) === 'spotify:track:short3');
+  await page.evaluate(() => (window.__fakeSpotifyAutoplay = false));
+
   // ---- expired access token
   mock.expireTokens();
   const refreshed = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').search('again').then((r) => r.tracks.length, (e) => String(e)));
@@ -993,9 +1094,15 @@ async function spotify() {
   check('...and back to Spotify hands the visuals to the shared tab audio again', s.input === 'capture' && !(await fake(() => window.__fakeSpotify.audio.paused)));
 
   // ---- staying signed in, and signing out
+  const signIns = mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length;
   await page.reload();
   await page.waitForFunction(() => window.__phosphor?.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 15000 }).catch(() => {});
-  check('the session is restored after a reload without signing in again', (await svc()).connected && mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length === 1);
+  check('the session is restored after a reload without signing in again', (await svc()).connected && mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length === signIns);
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="spotify"]');
+  await page.waitForSelector('.shelf[data-shelf="Spotify-made playlists"] .media-card', { timeout: 10000 }).catch(() => {});
+  check('a Spotify-made playlist opened by link is kept on the Spotify home', (await page.$$eval('.shelf[data-shelf="Spotify-made playlists"] .media-title', (els) => els.map((e) => e.textContent))).join() === 'Mock Hits');
+  await page.keyboard.press('Escape');
   await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').disconnect());
   check('disconnect forgets the tokens', !(await svc()).connected && (await page.evaluate(() => localStorage.getItem('phosphor.spotify.tokens'))) === null);
   const offline = await page.evaluate(async () => {
@@ -1065,6 +1172,31 @@ async function apple() {
   await page.click('.tab-panel >> text=Connect Apple Music');
   await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'apple').status().connected, null, { timeout: 10000 }).catch(() => {});
   check('with a good token, sign-in connects', (await svc()).connected, JSON.stringify(await svc()));
+
+  // ---- the Apple Music home
+  await page.waitForSelector('.shelf[data-shelf="Your albums"] .media-card', { timeout: 10000 }).catch(() => {});
+  const appleShelves = await page.$$eval('.shelf', (els) => els.map((e) => `${e.dataset.shelf}:${e.querySelectorAll('.media-card').length}`));
+  check(
+    'the Apple Music home shows For You groups, recently played, heavy rotation, the charts and your library',
+    appleShelves.join() === 'Made for You:2,More Like The Understudies:1,Recently played:3,Recently played songs:2,Heavy rotation:1,Top Songs:5,Top Albums:1,Top Playlists:1,Your playlists:1,Your albums:1',
+    appleShelves.join(),
+  );
+  check('stations are marked as playing as a whole', await page.isVisible('.shelf[data-shelf="Made for You"] .media-card:has-text("Understudy Radio") .media-badge'));
+  await page.waitForFunction(() => [...document.querySelectorAll('.shelf .media-art img')].filter((img) => img.naturalWidth > 0).length >= 6, null, { timeout: 5000 }).catch(() => {});
+  await page.screenshot({ path: path.join(SHOTS, 'ui-apple-home.png') });
+  await page.hover('.shelf[data-shelf="Recently played songs"] .media-card >> nth=0');
+  await page.click('.shelf[data-shelf="Recently played songs"] .media-card >> nth=0 >> [title^="Save to your Apple Music library"]');
+  await page.waitForTimeout(500);
+  check('the heart adds a song to your Apple Music library (POST /v1/me/library)', await page.evaluate(() => window.__fakeAppleLog.added.some((p) => p['ids[songs]'] === '2001')), JSON.stringify(await page.evaluate(() => window.__fakeAppleLog.added)));
+  await page.click('.shelf[data-shelf="Heavy rotation"] .media-card >> nth=0');
+  await page.waitForSelector('.collection-title');
+  await page.waitForSelector('.tab-panel .results .row', { timeout: 5000 }).catch(() => {});
+  check('an album opens as a page listing its songs', (await page.textContent('.collection-title')) === 'Dress Rehearsal' && (await page.locator('.tab-panel .results .row').count()) === 4);
+  await page.click('.collection-meta [title^="Save to your Apple Music library"]');
+  await page.waitForTimeout(400);
+  check('...and the whole album can be added to your library', await page.evaluate(() => window.__fakeAppleLog.added.some((p) => p['ids[albums]'] === '1001')));
+  await page.click('.back-btn');
+  await page.waitForSelector('.shelf[data-shelf="Top Songs"]');
 
   // ---- search and play
   await page.fill('input[type=search]', 'understudies');
@@ -1152,6 +1284,22 @@ async function apple() {
   await page.waitForTimeout(2500);
   s = await state(page);
   check('an Apple Music song that plays to its end by itself starts the next one, once', appleAdvanced && s.index === 1, `index ${s.index}`);
+
+  // ---- a station: Apple plays it as a whole
+  await page.evaluate(async () => {
+    const { app, player } = window.__phosphor;
+    const service = app.services.find((x) => x.id === 'apple');
+    const station = (await service.home()).flatMap((shelf) => shelf.collections ?? []).find((c) => c.id.startsWith('stations:'));
+    player.clear();
+    player.add(await service.tracksOf(station), { play: true });
+  });
+  await page.waitForFunction(() => window.__phosphor.player.current?.title === 'Short Apple Song 1' && window.__phosphor.player.playing, null, { timeout: 10000 }).catch(() => {});
+  check('a station plays, showing the song it is on', (await page.evaluate(() => window.__fakeAppleLog.queue.at(-1)?.station)) === 'ra.mock1' && (await page.evaluate(() => window.__phosphor.player.current?.title)) === 'Short Apple Song 1');
+  await page.keyboard.press('n');
+  await page.waitForFunction(() => window.__phosphor.player.current?.title === 'Short Apple Song 2', null, { timeout: 8000 }).catch(() => {});
+  check('Next moves on within the station', (await state(page)).index === 0 && (await page.evaluate(() => window.__phosphor.player.current?.title)) === 'Short Apple Song 2');
+  await page.waitForFunction(() => window.__phosphor.player.current?.title === 'Short Apple Song 3', null, { timeout: 15000 }).catch(() => {});
+  check('the station carries on from song to song by itself (one song ending is not the end)', (await state(page)).index === 0 && (await page.evaluate(() => window.__phosphor.player.current?.title)) === 'Short Apple Song 3');
 
   // ---- sign out
   await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'apple').disconnect());
@@ -1339,6 +1487,44 @@ async function youtube() {
   await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'wrong' }));
   const bad = await yt((service) => service.search('x').then(() => 'ok', (e) => e.message));
   check('a wrong key is reported as such', /rejected the API key/.test(bad), bad);
+
+  // ---- the YouTube home: popular music with a key
+  await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'mock-api-key' }));
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="youtube"]');
+  await page.waitForSelector('.shelf[data-shelf="Popular music"] .media-card', { timeout: 8000 }).catch(() => {});
+  const popular = mock.log.data.find((d) => d.chart === 'mostPopular');
+  check('with a key, the YouTube home shows popular music videos', (await page.locator('.shelf[data-shelf="Popular music"] .media-card').count()) === 3);
+  check('...from the Music category of the most-popular chart, for a region', popular?.videoCategoryId === '10' && /^[A-Z]{2}$/.test(popular?.regionCode ?? ''), JSON.stringify(popular));
+
+  // ---- signing in with Google (optional, read-only)
+  check('without a Google client ID, the panel says how to enable sign-in', await page.isVisible('.tab-panel >> text=Add a Google client ID in Settings'));
+  await page.evaluate(() => window.__phosphor.settings.set({ googleClientId: 'mock-client.apps.googleusercontent.com' }));
+  await page.waitForSelector('.tab-panel button:has-text("Sign in with Google")');
+  await page.click('.tab-panel button:has-text("Sign in with Google")');
+  await page.waitForSelector('.tab-panel >> text=Signed in with Google', { timeout: 8000 }).catch(() => {});
+  const gis = await page.evaluate(() => window.__fakeGisLog?.requests.at(-1));
+  check("sign-in goes through Google's own window with the read-only YouTube permission", gis?.scope === 'https://www.googleapis.com/auth/youtube.readonly' && gis?.client_id === 'mock-client.apps.googleusercontent.com', JSON.stringify(gis));
+  check('the signed-in channel is shown', await page.isVisible('.tab-panel >> text=Mock Channel'));
+  await page.waitForSelector('.shelf[data-shelf="Liked videos"] .media-card', { timeout: 8000 }).catch(() => {});
+  const mine = await page.$$eval('.shelf[data-shelf="Your playlists"] .media-title', (els) => els.map((e) => e.textContent));
+  check('signed in, the home shows your playlists (with Liked videos) and your liked videos', mine.join() === 'Liked videos,Road Trip' && (await page.locator('.shelf[data-shelf="Liked videos"] .media-card').count()) === 2, mine.join());
+  check("the account's own lists are read with the sign-in, not the API key", mock.log.data.some((d) => d.endpoint === 'playlists' && d.mine === 'true' && d.bearer === 'mock-google-token' && !d.key));
+  await page.waitForFunction(() => [...document.querySelectorAll('.shelf .media-art img')].filter((img) => img.naturalWidth > 0).length >= 4, null, { timeout: 5000 }).catch(() => {});
+  await page.screenshot({ path: path.join(SHOTS, 'ui-youtube-home.png') });
+  const likedList = await yt(async (service) => (await service.tracksOf({ id: 'liked', source: 'youtube', kind: 'playlist', title: 'Liked videos' })).map((t) => t.title));
+  check('"Liked videos" plays as a playlist', likedList.join() === 'Short Clip 1,Mock Clip B', likedList.join());
+  await page.click('.shelf[data-shelf="Your playlists"] .media-card:has-text("Road Trip")');
+  await page.waitForSelector('.tab-panel .results .row', { timeout: 6000 }).catch(() => {});
+  check('your own playlist opens with its videos', (await page.locator('.tab-panel .results .row').count()) === 2);
+  await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: '' }));
+  const signedSearch = await yt((service) => (service.canSearch() ? service.search('clips').then((r) => r.tracks.length, (e) => e.message) : 'no search'));
+  check('signed in, search works without an API key', signedSearch === 3, String(signedSearch));
+  check("the first screen's YouTube tile shows the sign-in", (await page.textContent('.service-tile[data-service="youtube"] .service-state')) === 'Signed in as Mock Channel');
+  await page.click('.tab-panel button:has-text("Sign out")');
+  await page.waitForTimeout(400);
+  check('signing out forgets the token and revokes it with Google', (await page.evaluate(() => localStorage.getItem('phosphor.google.token'))) === null && (await page.evaluate(() => window.__fakeGisLog.revoked.includes('mock-google-token'))) && !(await page.isVisible('.shelf[data-shelf="Liked videos"]')));
+  await page.keyboard.press('Escape');
 
   // ---- leaving YouTube hides the player
   await page.setInputFiles('#file-input', TRACK);

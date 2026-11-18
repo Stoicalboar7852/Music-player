@@ -1,7 +1,7 @@
 // The queue drawer: what is lined up, click to play, drag to reorder.
 
 import type { App } from '../app/app';
-import type { Track } from '../player/types';
+import { SOURCE_NAMES, type Track } from '../player/types';
 import { clear, formatTime, h, icon, iconButton } from './dom';
 
 /** A track row shared by the queue and the service browsers. */
@@ -42,27 +42,29 @@ export function createQueue(app: App) {
 
   const row = (track: Track, index: number): HTMLElement => {
     const isCurrent = player.current?.id === track.id;
-    const thumb = trackThumb(track);
+    // A list the service plays itself shows the list, and the song it is on while it plays.
+    const title = track.context?.title ?? track.title;
+    const sub = track.context
+      ? isCurrent && track.title !== track.context.title
+        ? `Now: ${[track.title, track.artist].filter(Boolean).join(' — ')}`
+        : `Played by ${SOURCE_NAMES[track.source]}`
+      : [track.artist, track.album].filter(Boolean).join(' — ') || ' ';
+    const thumb = trackThumb(track.context && !isCurrent ? { artworkUrl: track.context.artworkUrl ?? track.artworkUrl } : track);
     if (isCurrent) {
       thumb.append(h('div', { class: `eq ${player.playing ? '' : 'paused'}` }, h('i'), h('i'), h('i')));
     }
     const el = h(
       'div',
-      { class: `row ${isCurrent ? 'current' : ''}`, draggable: 'true', title: track.file?.name ?? track.title },
+      { class: `row ${isCurrent ? 'current' : ''}`, draggable: 'true', title: track.file?.name ?? title },
       thumb,
-      h(
-        'div',
-        null,
-        h('div', { class: 'row-title', text: track.title }),
-        h('div', { class: 'row-sub', text: [track.artist, track.album].filter(Boolean).join(' — ') || ' ' }),
-      ),
+      h('div', null, h('div', { class: 'row-title', text: title }), h('div', { class: 'row-sub', text: sub })),
       h(
         'div',
         { class: 'row-end' },
         track.duration ? h('span', { text: formatTime(track.duration) }) : null,
         iconButton('listPlus', 'Add to a playlist', (e) => {
           e.stopPropagation();
-          app.addToPlaylist(e.currentTarget as HTMLElement, { tracks: [track], label: `"${track.title}"` });
+          app.addToPlaylist(e.currentTarget as HTMLElement, { tracks: [track], label: `"${title}"` });
         }),
         iconButton('close', 'Remove from queue', (e) => {
           e.stopPropagation();

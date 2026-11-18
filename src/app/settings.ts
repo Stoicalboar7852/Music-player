@@ -26,6 +26,8 @@ export interface Settings {
   spotifyClientId: string;
   appleDeveloperToken: string;
   youtubeApiKey: string;
+  /** Google OAuth client ID (web application), for signing in to YouTube. */
+  googleClientId: string;
 }
 
 const DEFAULTS: Settings = {
@@ -44,6 +46,7 @@ const DEFAULTS: Settings = {
   spotifyClientId: '',
   appleDeveloperToken: '',
   youtubeApiKey: '',
+  googleClientId: '',
 };
 
 const KEY = 'phosphor.settings.v1';

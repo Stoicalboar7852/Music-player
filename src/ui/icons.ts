@@ -41,7 +41,9 @@ export const ICONS = {
   download: stroke('<path d="M12 4v11M7.500 10.500 12 15l4.500-4.500"/><path d="M5 19h14"/>'),
   upload: stroke('<path d="M12 15V4M7.500 8.500 12 4l4.500 4.500"/><path d="M5 19h14"/>'),
   heart: stroke('<path d="M12 19.500s-7-4.300-7-9.300A3.900 3.900 0 0 1 12 8a3.900 3.900 0 0 1 7 2.200c0 5-7 9.300-7 9.300z"/>'),
+  heartFilled: fill('<path d="M12 19.500s-7-4.300-7-9.300A3.900 3.900 0 0 1 12 8a3.900 3.900 0 0 1 7 2.200c0 5-7 9.300-7 9.300z"/>'),
   external: stroke('<path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/>'),
+  refresh: stroke('<path d="M19.500 8.500A8 8 0 1 0 20 12"/><path d="M20 4v4.500h-4.500"/>'),
   copy: stroke('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),
 } as const;
 

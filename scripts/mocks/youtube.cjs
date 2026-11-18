@@ -20,7 +20,38 @@ const VIDEOS = {
 const PLAYLISTS = {
   OLAK5uy_mockalbum: ['aaaaaaaaaaa', 'bbbbbbbbbbb', 'ccccccccccc'],
   PLmockplaylist01: ['ccccccccccc', 'aaaaaaaaaaa'],
+  // The signed-in account's own playlist.
+  PLmine0000001: ['bbbbbbbbbbb', 'ccccccccccc'],
 };
+const POPULAR = ['ccccccccccc', 'aaaaaaaaaaa', 'bbbbbbbbbbb'];
+const LIKED = ['shortclip01', 'bbbbbbbbbbb'];
+const GOOGLE_TOKEN = 'mock-google-token';
+const YT_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+
+// Google Identity Services (token model), served in place of accounts.google.com/gsi/client.
+// Test switch: window.__fakeGisCancel = true closes the sign-in window instead.
+const GIS_SOURCE = `
+(() => {
+  window.__fakeGisLog = { requests: [], revoked: [] };
+  window.google = window.google || {};
+  window.google.accounts = {
+    oauth2: {
+      initTokenClient(config) {
+        return {
+          requestAccessToken(overrides) {
+            window.__fakeGisLog.requests.push({ client_id: config.client_id, scope: config.scope, prompt: overrides && overrides.prompt });
+            setTimeout(() => {
+              if (window.__fakeGisCancel) { config.error_callback && config.error_callback({ type: 'popup_closed', message: 'Popup window closed' }); return; }
+              if (!/apps\\.googleusercontent\\.com$/.test(config.client_id)) { config.callback({ error: 'invalid_client', error_description: 'The OAuth client was not found.' }); return; }
+              config.callback({ access_token: '${GOOGLE_TOKEN}', expires_in: 3599, scope: config.scope, token_type: 'Bearer' });
+            }, 80);
+          },
+        };
+      },
+      revoke(token, done) { window.__fakeGisLog.revoked.push(token); done && done(); },
+    },
+  };
+})();`;
 
 // The simulated IFrame Player API. Like the real one, each player is a
 // cross-origin iframe on www.youtube.com; the page talks to it by postMessage.
@@ -75,17 +106,42 @@ const API_SOURCE = `
 
 async function installYouTubeMock(context) {
   const log = { data: [] };
+  void YT_SCOPE;
   const json = (route, status, body) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
   await context.route('https://www.youtube.com/iframe_api', (route) => route.fulfill({ contentType: 'application/javascript', body: API_SOURCE }));
   await routeFramePlayer(context, 'https://www.youtube.com', '/embed/');
   await context.route('https://i.ytimg.com/**', (route) => route.fulfill({ path: path.resolve('.verify/audio/cover.png'), headers: { 'access-control-allow-origin': '*' } }));
+  await context.route('https://accounts.google.com/gsi/client', (route) => route.fulfill({ contentType: 'application/javascript', body: GIS_SOURCE }));
+  const video = (id) => ({ id, snippet: { title: VIDEOS[id].title, channelTitle: VIDEOS[id].author }, contentDetails: { duration: VIDEOS[id].short ? 'PT8S' : 'PT40S' } });
   await context.route('https://www.googleapis.com/youtube/v3/**', (route) => {
-    const url = new URL(route.request().url());
+    const req = route.request();
+    if (req.method() === 'OPTIONS') {
+      return route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type', 'access-control-allow-methods': 'GET, OPTIONS' } });
+    }
+    const url = new URL(req.url());
     const q = Object.fromEntries(url.searchParams);
     const endpoint = url.pathname.split('/').pop();
-    log.data.push({ endpoint, ...q });
-    if (q.key === 'exhausted-key') return json(route, 403, { error: { code: 403, message: 'quota', errors: [{ reason: 'quotaExceeded' }] } });
-    if (q.key !== 'mock-api-key') return json(route, 400, { error: { code: 400, message: 'API key not valid', errors: [{ reason: 'keyInvalid' }] } });
+    const bearer = (req.headers().authorization ?? '').replace('Bearer ', '');
+    log.data.push({ endpoint, ...q, ...(bearer ? { bearer } : {}) });
+    const signedIn = bearer === GOOGLE_TOKEN;
+    if (bearer && !signedIn) return json(route, 401, { error: { code: 401, message: 'Invalid Credentials', errors: [{ reason: 'authError' }] } });
+    if (!signedIn) {
+      if (q.key === 'exhausted-key') return json(route, 403, { error: { code: 403, message: 'quota', errors: [{ reason: 'quotaExceeded' }] } });
+      if (q.key !== 'mock-api-key') return json(route, 400, { error: { code: 400, message: 'API key not valid', errors: [{ reason: 'keyInvalid' }] } });
+    }
+    const needsSignIn = () => json(route, 401, { error: { code: 401, message: 'Login Required', errors: [{ reason: 'required' }] } });
+    // ---- the account's own things
+    if (endpoint === 'channels' && q.mine === 'true') return signedIn ? json(route, 200, { items: [{ id: 'UCmock', snippet: { title: 'Mock Channel' } }] }) : needsSignIn();
+    if (endpoint === 'playlists' && q.mine === 'true') {
+      if (!signedIn) return needsSignIn();
+      return json(route, 200, { items: [{ id: 'PLmine0000001', snippet: { title: 'Road Trip', thumbnails: { medium: { url: 'https://i.ytimg.com/vi/bbbbbbbbbbb/mqdefault.jpg' } } }, contentDetails: { itemCount: 2 } }] });
+    }
+    if (endpoint === 'videos' && q.myRating === 'like') return signedIn ? json(route, 200, { items: LIKED.map(video) }) : needsSignIn();
+    // ---- public charts: "mostPopular", narrowed to the Music category
+    if (endpoint === 'videos' && q.chart === 'mostPopular') {
+      if (q.videoCategoryId !== '10' || !/^[A-Z]{2}$/.test(q.regionCode ?? '')) return json(route, 400, { error: { code: 400, message: 'bad chart request' } });
+      return json(route, 200, { items: POPULAR.map(video) });
+    }
     if (endpoint === 'search' && q.type === 'video') {
       return json(route, 200, { items: ['aaaaaaaaaaa', 'bbbbbbbbbbb', 'ccccccccccc'].map((id) => ({ id: { kind: 'youtube#video', videoId: id }, snippet: { title: VIDEOS[id].title, channelTitle: VIDEOS[id].author } })) });
     }
@@ -108,4 +164,4 @@ async function installYouTubeMock(context) {
   return { log };
 }
 
-module.exports = { installYouTubeMock };
+module.exports = { installYouTubeMock, YT_SCOPE };

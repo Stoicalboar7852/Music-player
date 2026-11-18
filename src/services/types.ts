@@ -22,6 +22,27 @@ export interface SearchResults {
   collections: Collection[];
 }
 
+/** A row of things on a service's home view: songs, or albums and playlists. */
+export interface Shelf {
+  title: string;
+  tracks?: Track[];
+  collections?: Collection[];
+  /** A line shown under the title: why the shelf is empty, or what its items are. */
+  note?: string;
+  /** Offer to reconnect: the shelf needs a permission the current sign-in doesn't have. */
+  needsReconnect?: boolean;
+}
+
+export interface OptionalAccount {
+  /** e.g. "Sign in with Google". */
+  readonly signInLabel: string;
+  /** What signing in adds, for the panel. */
+  readonly benefit: string;
+  status(): { available: boolean; signedIn: boolean; name?: string; problem?: string; setupHint?: string };
+  signIn(): Promise<void>;
+  signOut(): void;
+}
+
 export interface MusicService {
   readonly id: Exclude<SourceId, 'local'>;
   readonly name: string;
@@ -47,6 +68,18 @@ export interface MusicService {
   /** The signed-in user's playlists, where the service offers them. */
   library?(): Promise<Collection[]>;
   tracksOf(collection: Collection): Promise<Track[]>;
+  /** The service's home view: what the API offers for this account. */
+  home?(): Promise<Shelf[]>;
+  /** Saves a song, album or playlist to the user's library on the service. */
+  saveToLibrary?(item: Track | Collection): Promise<void>;
+  /** Whether saveToLibrary makes sense for this item (not for things already in the library). */
+  canSave?(item: Track | Collection): boolean;
+  /** Whether a song, album or playlist is already in the user's library on the service. */
+  isSaved?(item: Track | Collection): Promise<boolean>;
+  /** Signs in again, asking for any permissions added since. */
+  reconnect?(): Promise<void>;
+  /** An optional sign-in that adds to what the service can do (YouTube: Google, for your own playlists). */
+  readonly account?: OptionalAccount;
   /** Turns a pasted link into something playable, or null if it isn't one of ours. */
   resolveLink(url: string): Promise<SearchResults | null>;
 }

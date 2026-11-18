@@ -2,8 +2,10 @@
 //
 // Pasting video and playlist links (youtube.com, youtu.be, music.youtube.com)
 // works with no setup at all. A YouTube Data API key is optional and adds
-// search and named playlist tracks. There is no sign-in: YouTube offers no
-// official API for a YouTube Music library.
+// search, popular music and named playlist tracks. Signing in with Google
+// (optional, needs an OAuth client ID) adds the user's own playlists, which
+// include their YouTube Music playlists, and liked videos. There is no
+// official API for the rest of a YouTube Music library (albums, artists).
 //
 // The player is an embedded YouTube iframe on another origin, so its audio
 // cannot be read either; the visualizers are fed by sharing this tab's audio.
@@ -14,10 +16,14 @@ import { debug } from '../app/debug';
 import { Emitter } from '../app/emitter';
 import { settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
-import type { MusicService, SearchResults, ServiceStatus } from './types';
+import type { MusicService, OptionalAccount, SearchResults, ServiceStatus, Shelf } from './types';
 
 const API_URL = 'https://www.youtube.com/iframe_api';
 const DATA_API = 'https://www.googleapis.com/youtube/v3';
+const GIS_URL = 'https://accounts.google.com/gsi/client';
+/** Read-only: lists playlists and likes. Phosphor never changes anything on the account. */
+const YT_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+const GOOGLE_TOKEN_KEY = 'phosphor.google.token';
 
 // ---- the parts of the IFrame API this file uses
 
@@ -51,10 +57,151 @@ interface YtNamespace {
   ) => YtPlayer;
 }
 
+// ---- the parts of Google Identity Services (token model) this file uses
+
+interface GisTokenResponse {
+  access_token?: string;
+  expires_in?: number | string;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GisTokenClient {
+  requestAccessToken(overrides?: { prompt?: string }): void;
+}
+
+interface GisOauth2 {
+  initTokenClient(config: {
+    client_id: string;
+    scope: string;
+    callback: (response: GisTokenResponse) => void;
+    error_callback?: (error: { type?: string; message?: string }) => void;
+  }): GisTokenClient;
+  revoke(token: string, done?: () => void): void;
+}
+
 declare global {
   interface Window {
     YT?: YtNamespace & { loaded?: number };
     onYouTubeIframeAPIReady?: () => void;
+    google?: { accounts?: { oauth2?: GisOauth2 } };
+  }
+}
+
+interface GoogleToken {
+  access: string;
+  /** Epoch milliseconds. Google's browser tokens last an hour and can't be refreshed without a click. */
+  expiresAt: number;
+  clientId: string;
+  /** The YouTube channel name, shown as who is signed in. */
+  name?: string;
+}
+
+function readToken(): GoogleToken | null {
+  try {
+    return JSON.parse(localStorage.getItem(GOOGLE_TOKEN_KEY) ?? 'null') as GoogleToken | null;
+  } catch {
+    return null;
+  }
+}
+
+/** Optional Google sign-in, through Google's own sign-in window. */
+class GoogleAccount implements OptionalAccount {
+  readonly signInLabel = 'Sign in with Google';
+  readonly benefit = 'Adds your own YouTube and YouTube Music playlists and liked videos, and search without an API key.';
+  private token: GoogleToken | null = readToken();
+  private problem = '';
+  private gis: Promise<GisOauth2> | null = null;
+
+  constructor(private changed: () => void) {}
+
+  private get clientId() {
+    return settings.get('googleClientId').trim();
+  }
+
+  private valid(): GoogleToken | null {
+    const t = this.token;
+    return t && t.clientId === this.clientId && t.expiresAt - Date.now() > 60_000 ? t : null;
+  }
+
+  /** A usable access token, or null (signed out or expired). */
+  accessToken(): string | null {
+    return this.valid()?.access ?? null;
+  }
+
+  status() {
+    const token = this.valid();
+    return {
+      available: this.clientId.length > 0,
+      signedIn: token !== null,
+      name: token?.name,
+      problem: this.problem || (this.token && !token && this.token.clientId === this.clientId ? 'Your Google sign-in has run out (Google ends them after an hour). Sign in again.' : undefined),
+      setupHint: this.clientId ? undefined : 'Add a Google client ID in Settings to sign in and see your own playlists.',
+    };
+  }
+
+  private loadGis(): Promise<GisOauth2> {
+    this.gis ??= new Promise<GisOauth2>((resolve, reject) => {
+      if (window.google?.accounts?.oauth2) return resolve(window.google.accounts.oauth2);
+      const script = document.createElement('script');
+      script.src = GIS_URL;
+      script.async = true;
+      script.onload = () => (window.google?.accounts?.oauth2 ? resolve(window.google.accounts.oauth2) : reject(new Error("Google's sign-in loaded without its API.")));
+      script.onerror = () => reject(new Error("Google's sign-in could not be loaded. Check your connection or content blockers."));
+      document.head.append(script);
+    }).catch((error) => {
+      this.gis = null;
+      throw error;
+    });
+    return this.gis;
+  }
+
+  async signIn(): Promise<void> {
+    const clientId = this.clientId;
+    if (!clientId) throw new Error('Add a Google client ID in Settings first.');
+    const oauth2 = await this.loadGis();
+    const response = await new Promise<GisTokenResponse>((resolve, reject) => {
+      const client = oauth2.initTokenClient({
+        client_id: clientId,
+        scope: YT_SCOPE,
+        callback: resolve,
+        error_callback: (error) =>
+          reject(new Error(error.type === 'popup_closed' ? 'Google sign-in was cancelled.' : `Google sign-in failed: ${error.message ?? error.type ?? 'unknown error'}`)),
+      });
+      client.requestAccessToken({ prompt: this.token ? '' : 'consent' });
+    });
+    if (!response.access_token || response.error) {
+      this.problem = `Google sign-in failed: ${response.error_description ?? response.error ?? 'no token'}`;
+      this.changed();
+      throw new Error(this.problem);
+    }
+    if (response.scope && !response.scope.split(' ').includes(YT_SCOPE)) {
+      this.problem = 'Google sign-in finished without permission to see your YouTube account. Sign in again and tick the YouTube box.';
+      this.changed();
+      throw new Error(this.problem);
+    }
+    this.problem = '';
+    this.token = { access: response.access_token, expiresAt: Date.now() + Number(response.expires_in ?? 3600) * 1000, clientId };
+    try {
+      const me = await fetch(`${DATA_API}/channels?part=snippet&mine=true`, { headers: { Authorization: `Bearer ${response.access_token}` } });
+      const body = (await me.json()) as { items?: { snippet?: { title?: string } }[] };
+      this.token.name = body.items?.[0]?.snippet?.title;
+    } catch {
+      /* the name is cosmetic */
+    }
+    localStorage.setItem(GOOGLE_TOKEN_KEY, JSON.stringify(this.token));
+    debug('youtube', `signed in to Google as ${this.token.name ?? 'unknown channel'}`);
+    this.changed();
+  }
+
+  signOut() {
+    const token = this.token?.access;
+    this.token = null;
+    this.problem = '';
+    localStorage.removeItem(GOOGLE_TOKEN_KEY);
+    if (token) window.google?.accounts?.oauth2?.revoke(token);
+    this.changed();
   }
 }
 
@@ -154,8 +301,10 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   readonly signIn = false;
   readonly limits = [
     'Paste any YouTube or YouTube Music video or playlist link; nothing needs setting up. To queue a YouTube Music album, use Share on the album page, which gives a playlist link.',
-    'There is no sign-in: YouTube has no official API for a YouTube Music library, likes or uploads, so those cannot be browsed here. Public and unlisted playlists work by link.',
-    'Searching needs a free YouTube Data API key (Settings). Each search makes two search requests (videos and playlists) at 100 quota units each, so the default 10,000 daily units allow about 50 searches a day. Pasting links costs at most a few units.',
+    'Signing in with Google is optional (it needs an OAuth client ID in Settings) and read-only. It adds your own playlists, which include your YouTube Music playlists, and your liked videos. YouTube has no official API for the rest of a YouTube Music library (saved albums, artists), so those cannot be shown.',
+    "Phosphor doesn't like or save videos: that would need permission to manage your YouTube account, which it doesn't ask for. Public and unlisted playlists work by link.",
+    'Searching needs a free YouTube Data API key or a Google sign-in. Each search makes two search requests (videos and playlists) at 100 quota units each, so the default 10,000 daily units allow about 50 searches a day. Pasting links and popular music cost a few units.',
+    "Google ends browser sign-ins after an hour; when that happens your playlists ask you to sign in again (one click).",
     'Some videos, often official music videos from labels, are blocked from playing outside YouTube by their owner. Those are skipped with a message.',
     "YouTube's terms require the player to stay visible while it plays, so a small video frame stays in the corner, even in fullscreen.",
     "The embedded player runs on YouTube's own origin and its audio cannot be read. The visualizers react to this tab's shared audio instead.",
@@ -165,6 +314,8 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   player: YtPlayer | null = null;
   volume = 0.8;
   current: Track | null = null;
+
+  readonly account = new GoogleAccount(() => this.emit('status', undefined));
 
   private frame: HTMLElement;
   private ready: Promise<void> | null = null;
@@ -178,7 +329,7 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
     this.frame.append(Object.assign(document.createElement('div'), { id: 'yt-player' }));
     document.body.append(this.frame);
     settings.on('change', (patch) => {
-      if ('youtubeApiKey' in patch) this.emit('status', undefined);
+      if ('youtubeApiKey' in patch || 'googleClientId' in patch) this.emit('status', undefined);
     });
   }
 
@@ -186,11 +337,18 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
     return settings.get('youtubeApiKey').trim();
   }
 
+  /** The Data API can be used: with the signed-in account, or with the API key. */
+  private canQuery(): boolean {
+    return this.account.accessToken() !== null || this.key.length > 0;
+  }
+
   status(): ServiceStatus {
+    const google = this.account.status();
     return {
       configured: true,
       connected: true,
-      label: this.key ? 'Ready: links and search' : 'Ready: paste links (add an API key in Settings to search)',
+      account: google.name,
+      label: google.signedIn ? 'Signed in to YouTube' : this.key ? 'Ready: links and search' : 'Ready: paste links (add an API key in Settings to search)',
     };
   }
 
@@ -308,10 +466,17 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   }
 
   private async data<T>(path: string, params: Record<string, string>): Promise<T> {
-    const response = await fetch(`${DATA_API}/${path}?${new URLSearchParams({ ...params, key: this.key })}`);
+    // The signed-in account's quota is used when there is one; otherwise the API key's.
+    const token = this.account.accessToken();
+    const query = new URLSearchParams(token ? params : { ...params, key: this.key });
+    const response = await fetch(`${DATA_API}/${path}?${query}`, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
     const body = (await response.json().catch(() => ({}))) as T & { error?: { message?: string; errors?: { reason?: string }[] } };
     if (!response.ok) {
       const reason = body.error?.errors?.[0]?.reason;
+      if (token && response.status === 401) {
+        this.account.signOut();
+        throw new Error('Your Google sign-in has run out. Sign in again.');
+      }
       if (reason === 'quotaExceeded') throw new Error("The YouTube API key's daily quota is used up. It resets at midnight Pacific time.");
       if (reason === 'keyInvalid' || response.status === 400) throw new Error('YouTube rejected the API key. Check it in Settings.');
       if (response.status === 403) throw new Error(`YouTube refused the request: ${body.error?.message ?? 'forbidden'}. Is the YouTube Data API v3 enabled for this key?`);
@@ -338,11 +503,11 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   }
 
   canSearch() {
-    return this.key.length > 0;
+    return this.canQuery();
   }
 
   searchUnavailable() {
-    return 'Search needs a YouTube Data API key (Settings, free from Google Cloud). Pasting links works without one.';
+    return 'Search needs a YouTube Data API key (Settings, free from Google Cloud) or a Google sign-in. Pasting links works without either.';
   }
 
   async search(query: string): Promise<SearchResults> {
@@ -369,7 +534,8 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
   }
 
   async tracksOf(collection: Collection): Promise<Track[]> {
-    if (this.key) {
+    if (collection.id === 'liked') return this.liked(500);
+    if (this.canQuery()) {
       type Items = { items: { contentDetails: { videoId: string } }[]; nextPageToken?: string };
       const ids: string[] = [];
       let pageToken: string | undefined;
@@ -389,6 +555,85 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
     // fill in as each video plays.
     const ids = await this.playlistIdsViaPlayer(collection.id);
     return ids.map((id) => this.videoTrack(id));
+  }
+
+  /** Videos as the videos endpoint returns them (chart and liked lists). */
+  private videosToTracks(items: { id: string; snippet: { title: string; channelTitle: string }; contentDetails?: { duration?: string } }[]): Track[] {
+    return items.map((v) => this.videoTrack(v.id, v.snippet.title, v.snippet.channelTitle, isoDuration(v.contentDetails?.duration)));
+  }
+
+  private async liked(max: number): Promise<Track[]> {
+    if (!this.account.accessToken()) throw new Error('Sign in with Google to see your liked videos.');
+    type Videos = { items: { id: string; snippet: { title: string; channelTitle: string }; contentDetails?: { duration?: string } }[]; nextPageToken?: string };
+    const out: Track[] = [];
+    let pageToken: string | undefined;
+    do {
+      const page: Videos = await this.data<Videos>('videos', {
+        part: 'snippet,contentDetails',
+        myRating: 'like',
+        maxResults: String(Math.min(50, max)),
+        ...(pageToken ? { pageToken } : {}),
+      });
+      out.push(...this.videosToTracks(page.items));
+      pageToken = page.nextPageToken;
+    } while (pageToken && out.length < max);
+    return out.slice(0, max);
+  }
+
+  private async myPlaylists(): Promise<Collection[]> {
+    type Lists = { items: { id: string; snippet: { title: string; thumbnails?: { medium?: { url: string } } }; contentDetails?: { itemCount?: number } }[]; nextPageToken?: string };
+    const out: Collection[] = [{ id: 'liked', source: 'youtube', kind: 'playlist', title: 'Liked videos', subtitle: 'Your likes on YouTube and YouTube Music' }];
+    let pageToken: string | undefined;
+    do {
+      const page: Lists = await this.data<Lists>('playlists', { part: 'snippet,contentDetails', mine: 'true', maxResults: '50', ...(pageToken ? { pageToken } : {}) });
+      for (const p of page.items) {
+        const count = p.contentDetails?.itemCount;
+        out.push({
+          id: p.id,
+          source: 'youtube',
+          kind: 'playlist',
+          title: p.snippet.title,
+          subtitle: count !== undefined ? `${count} video${count === 1 ? '' : 's'}` : 'Your playlist',
+          artworkUrl: p.snippet.thumbnails?.medium?.url,
+        });
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken && out.length < 200);
+    return out;
+  }
+
+  async library(): Promise<Collection[]> {
+    return this.myPlaylists();
+  }
+
+  async home(): Promise<Shelf[]> {
+    const shelves: Shelf[] = [];
+    const attempt = async (title: string, load: () => Promise<Partial<Shelf>>) => {
+      try {
+        shelves.push({ title, ...(await load()) });
+      } catch (error) {
+        shelves.push({ title, note: `Couldn't load this: ${(error as Error).message}` });
+      }
+    };
+    if (this.account.accessToken()) {
+      await attempt('Your playlists', async () => ({ collections: await this.myPlaylists() }));
+      await attempt('Liked videos', async () => ({ tracks: await this.liked(24) }));
+    }
+    if (this.canQuery()) {
+      const region = /-([A-Z]{2})$/.exec(navigator.language)?.[1] ?? 'US';
+      await attempt('Popular music', async () => {
+        type Videos = { items: { id: string; snippet: { title: string; channelTitle: string }; contentDetails?: { duration?: string } }[] };
+        // Category 10 is Music. One quota unit.
+        const chart = await this.data<Videos>('videos', { part: 'snippet,contentDetails', chart: 'mostPopular', videoCategoryId: '10', regionCode: region, maxResults: '24' });
+        return { tracks: this.videosToTracks(chart.items), note: `Most popular music videos on YouTube in ${region} right now.` };
+      });
+    } else {
+      shelves.push({
+        title: 'Popular music',
+        note: 'Add a YouTube Data API key in Settings, or sign in with Google, to see popular music and search YouTube.',
+      });
+    }
+    return shelves;
   }
 
   private async playlistIdsViaPlayer(list: string): Promise<string[]> {
@@ -433,12 +678,12 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
     if (parsed.unsupported) throw new Error(parsed.unsupported);
     const result: SearchResults = { tracks: [], collections: [] };
     if (parsed.video) {
-      result.tracks = this.key ? await this.describe([parsed.video]) : [this.videoTrack(parsed.video)];
+      result.tracks = this.canQuery() ? await this.describe([parsed.video]) : [this.videoTrack(parsed.video)];
       if (result.tracks.length === 0) throw new Error('That video is private, deleted, or not available.');
     }
     if (parsed.list) {
       let title = 'YouTube playlist';
-      if (this.key) {
+      if (this.canQuery()) {
         type Lists = { items: { snippet: { title: string; channelTitle: string } }[] };
         const info = await this.data<Lists>('playlists', { part: 'snippet', id: parsed.list }).catch(() => null);
         if (info?.items[0]) title = info.items[0].snippet.title;

@@ -16,8 +16,12 @@ This is the `v2` branch. The `v1` branch keeps the first version unchanged. V2 i
 - **Songs move on by themselves.** When a Spotify song finished, the next one in the queue didn't start until you pressed skip. Spotify's player only reports when something changes, so a song that played through untouched never gave Phosphor the end signal it was waiting for. Phosphor now recognises the end in several independent ways (including Spotify's own autoplay taking over, Spotify swapping in another copy of a song, and Spotify saying nothing at all). A safety net moves any source on if it sits at the very end without reporting it.
 - **Now Playing shows the track.** On macOS, Phosphor's Now Playing entry showed the tab title (e.g. "Rise · Lynnic — Phosphor") with no artist or artwork while Spotify or YouTube played. Their players live in embedded frames that claim the media keys without setting any track info, and Chrome was showing that frame's empty entry. Phosphor now keeps its own page in charge, so Now Playing shows the title, artist and artwork, and media keys control Phosphor's queue. In the browser the entry still carries Chrome's icon; the desktop app planned for later will show Phosphor's own.
 - **Diagnostics.** Open **http://127.0.0.1:5173/?debug** to log playback events to the browser console (see [Troubleshooting](#troubleshooting)).
+- **Streaming on the first screen.** Spotify, Apple Music and YouTube sit on the welcome screen with their live state (set up, connect, connected as …), one click from their home view.
+- **Less fiddling to share audio.** Starting a streaming song with a click opens Chrome's share dialog straight away; pick this tab and click Allow, once per session (Settings can turn this off). A browser extension can't remove that step: Chrome only lets an extension capture a tab after a click on its toolbar button, every time. The desktop app planned for later captures without asking.
+- **Phosphor playlists** (<kbd>B</kbd>, or the library button). Mix songs from every source in one playlist; link a Spotify, Apple Music or YouTube playlist so it's fetched fresh each time it plays; put playlists inside playlists (loops are refused); play in order, shuffled, or alternating between sources; export and import as JSON. Local files are reopened from disk after a restart, where Chrome allows it.
+- **Browse each service.** Each service's tab in **Add music** opens on a home view built from what its API offers for your account, with album and playlist pages, and a heart to save to your library. See [Streaming services](#streaming-services) for what each one can and can't show.
 
-Still to come: the streaming services on the first screen, browsing each service, Phosphor playlists, better beat tracking, more visualizers, crossfade and mix transitions, and desktop and phone apps.
+Still to come: better beat tracking, more visualizers, crossfade and mix transitions, and desktop and phone apps.
 
 ## Quick start
 
@@ -191,9 +195,18 @@ Needs: a **Spotify Premium** account (Spotify does not allow browser playback fo
 5. In Phosphor: **Settings → Spotify → Client ID**, paste it. Then **Add music → Spotify → Connect Spotify** and approve in the popup.
 6. Optional: to let other people use your copy, add them under **User Management** in the dashboard (development mode allows five).
 
-Then search, open your playlists and Liked Songs, or paste `open.spotify.com` / `spotify:` links for tracks, albums and playlists.
+Then the Spotify tab opens on your Spotify home: **recently played**, **jump back in** (the albums and playlists those songs came from), **your top songs this month**, **your playlists** (with Liked Songs), **saved albums**, and the **Spotify-made playlists** you've opened. Search, or paste `open.spotify.com` / `spotify:` links for tracks, albums and playlists. Albums and playlists open as pages; the heart saves a song, album or playlist to your Spotify library, and the heart next to the song in the player saves whatever is playing.
 
-Limits: search returns at most 10 results per type (Spotify's cap for development-mode apps). Sign-in lasts until you disconnect; tokens refresh automatically.
+<img src="docs/screenshots/ui-spotify-home.png" alt="The Spotify home inside Phosphor">
+
+**Spotify-made playlists** (Discover Weekly, Daily Mixes, Release Radar, editorial playlists like Today's Top Hits): since November 2024 Spotify doesn't let apps like this one list their songs, and it no longer offers recommendations, new releases or charts to them either. It does still play them. Paste a link to one (Share → Copy link in Spotify) and Phosphor has Spotify play it as a whole: each song shows in the player as it comes up, Next and Previous move through it, and when it ends Phosphor carries on with its own queue. It's kept on your Spotify home for next time, can go in Phosphor playlists, and appears under *jump back in* when you've been playing it.
+
+Limits:
+
+- Search returns at most 10 results per type (Spotify's cap for development-mode apps).
+- Saving to your library may be refused with a 403: since 2026 Spotify blocks changes from many personal (development-mode) apps. Phosphor says so when it happens; playback is unaffected.
+- Phosphor 2 asks for a few more permissions than version 1 (recently played, top songs, saving to your library). If you signed in with version 1, the shelves that need them show **Reconnect Spotify**; one click and an approval in Spotify's window.
+- Sign-in lasts until you disconnect; tokens refresh automatically.
 
 ### Apple Music
 
@@ -211,13 +224,17 @@ Needs: a paid **Apple Developer Program** membership (to create a MusicKit key),
    Add `--origin http://127.0.0.1:5173` to lock the token to your copy of the app.
 5. In Phosphor: **Settings → Apple Music**, paste the token. Then **Add music → Apple Music → Connect Apple Music** and sign in with your Apple ID in Apple's window.
 
-Then search the catalog, open your library playlists, or paste `music.apple.com` song, album and playlist links. When the token expires, generate a new one and reload the page. If sign-in fails with an authorization error, check that the Team ID and Key ID match the key you downloaded.
+Then the Apple Music tab opens on your Apple Music home: the **For You** groups Apple recommends, **recently played** (albums, playlists, stations) and recently played songs, **heavy rotation**, Apple's **top songs, albums and playlists** charts for your country, and **your playlists and albums**. Search the catalog, or paste `music.apple.com` song, album and playlist links. The heart adds a song, album or playlist to your library. Stations play as a whole, the way Apple runs them: each song shows as it comes up and Next moves on within the station.
+
+<img src="docs/screenshots/ui-apple-home.png" alt="The Apple Music home inside Phosphor">
+
+When the token expires, generate a new one and reload the page. If sign-in fails with an authorization error, check that the Team ID and Key ID match the key you downloaded.
 
 ### YouTube and YouTube Music
 
 Needs: nothing for links. Paste any `youtube.com`, `youtu.be`, `shorts` or `music.youtube.com` video or playlist link in **Add music → YouTube**. For a YouTube Music album, use **Share** on the album page: it gives a playlist link, which works.
 
-Optional, for search and named playlist tracks: a **YouTube Data API key**.
+Optional, for search, popular music and named playlist tracks: a **YouTube Data API key**.
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create a project.
 2. **APIs & Services → Library**, find **YouTube Data API v3**, and **Enable** it.
@@ -225,10 +242,25 @@ Optional, for search and named playlist tracks: a **YouTube Data API key**.
 4. Edit the key: under *API restrictions* choose **Restrict key → YouTube Data API v3**; under *Application restrictions* choose **Websites** and add `http://127.0.0.1:5173/*` (and your hosted address, if any).
 5. In Phosphor: **Settings → YouTube → Data API key**, paste it.
 
+With a key, the YouTube tab opens on **popular music**: the most popular music videos in your country right now (YouTube's "most popular" chart, Music category).
+
+Optional, to see **your own playlists** (including the ones you made in YouTube Music) and **liked videos**: sign in with Google. This is read-only; Phosphor never changes anything on your account. It needs an OAuth client ID from the same Google Cloud project:
+
+1. **Google Auth Platform** (formerly *OAuth consent screen*): fill in **Branding** (an app name and your email), choose **Audience → External**, and add your own Google account under **Test users**. The app can stay in *Testing*; Google shows an "unverified app" warning during sign-in, which you can continue past for your own app.
+2. **Data Access → Add or remove scopes**: add `https://www.googleapis.com/auth/youtube.readonly`.
+3. **Clients → Create client → Web application**. Under **Authorised JavaScript origins** add `http://127.0.0.1:5173` (and your hosted https address, if any). No redirect URI is needed.
+4. In Phosphor: **Settings → YouTube → Google client ID**, paste the client ID (it ends in `.apps.googleusercontent.com`). Then **Add music → YouTube → Sign in with Google**.
+
+Signed in, search also works without an API key.
+
+<img src="docs/screenshots/ui-youtube-home.png" alt="The YouTube home inside Phosphor, signed in">
+
 Limits:
 
-- There is no sign-in. YouTube has no official API for a YouTube Music library, likes or history, so those can't be browsed; public and unlisted playlists work by link.
-- Each search costs about 200 of the key's 10,000 free daily quota units, so roughly 50 searches a day. Playing links costs at most a few units.
+- YouTube has no official API for the rest of a YouTube Music library (saved albums, artists, history), so those can't be shown. Public and unlisted playlists work by link.
+- Phosphor doesn't like or save videos: that needs permission to manage your YouTube account, which it doesn't ask for.
+- Google ends browser sign-ins after an hour; your playlists then ask you to sign in again (one click). While the Google app is in *Testing*, Google also asks for consent again after seven days.
+- Each search costs about 200 of the daily 10,000 free quota units, so roughly 50 searches a day. Popular music and playing links cost a few units.
 - Some videos (often official label music videos) are blocked by their owners from playing outside YouTube. They are skipped with a message.
 - YouTube's terms require the player to remain visible while it plays, so a small video frame stays in the bottom-left corner, even in fullscreen.
 

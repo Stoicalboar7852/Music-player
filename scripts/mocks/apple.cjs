@@ -21,7 +21,11 @@ const SDK_SOURCE = `
   const PLAYLIST = { id: 'pl.mock1', type: 'playlists', attributes: { name: 'Understudy Essentials', curatorName: 'Apple Music Mock', artwork: art } };
   const LIB_PLAYLIST = { id: 'p.lib1', type: 'library-playlists', attributes: { name: 'My Library Mix' } };
   const LIB_SONGS = [{ id: 'i.aaa', type: 'library-songs', attributes: { name: 'Library Song A', artistName: 'Me', albumName: 'Mine', durationInMillis: 40672, playParams: { id: 'i.aaa', isLibrary: true } } }];
-  window.__fakeAppleLog = { api: [], queue: [], config: null };
+  const LIB_ALBUM = { id: 'l.album1', type: 'library-albums', attributes: { name: 'My Saved Album', artistName: 'The Understudies', artwork: art } };
+  // A station plays song after song, forever; the 8-second songs make that quick to test.
+  const STATION = { id: 'ra.mock1', type: 'stations', attributes: { name: 'Understudy Radio', artwork: art } };
+  const asItem = (s) => ({ id: s.id, title: s.attributes.name, artistName: s.attributes.artistName, albumName: s.attributes.albumName, playbackDuration: s.attributes.durationInMillis, artwork: s.attributes.artwork, attributes: s.attributes });
+  window.__fakeAppleLog = { api: [], queue: [], config: null, added: [] };
 
   class Instance {
     constructor(config) {
@@ -30,8 +34,12 @@ const SDK_SOURCE = `
       this.audio.addEventListener('playing', () => this.setState(States.playing));
       this.audio.addEventListener('pause', () => { if (!this.audio.ended && this.playbackState !== States.stopped) this.setState(States.paused); });
       this.audio.addEventListener('durationchange', () => this.emit('playbackDurationDidChange', { duration: this.audio.duration }));
-      this.audio.addEventListener('ended', () => { this.setState(States.ended); this.setState(States.completed); });
-      this.api = { music: (path, params) => this.request(path, params) };
+      this.audio.addEventListener('ended', () => {
+        // In a station, "ended" marks the end of one song; the next follows by itself.
+        if (this.station) { this.setState(States.ended); void this.stationSong(this.stationIndex + 1); return; }
+        this.setState(States.ended); this.setState(States.completed);
+      });
+      this.api = { music: (path, params, options) => this.request(path, params, options) };
     }
     addEventListener(name, cb) { (this.listeners[name] ??= []).push(cb); }
     emit(name, payload) { for (const cb of this.listeners[name] ?? []) cb(payload); }
@@ -45,28 +53,75 @@ const SDK_SOURCE = `
       this.isAuthorized = true; this.emit('authorizationStatusDidChange', { authorizationStatus: 3 }); return 'mock-music-user-token';
     }
     async unauthorize() { this.isAuthorized = false; this.emit('authorizationStatusDidChange', { authorizationStatus: 0 }); }
+    async loadFile(file, play) {
+      window.__fakeAppleBlobs ??= {};
+      window.__fakeAppleBlobs[file] ??= URL.createObjectURL(await (await fetch('/.verify/audio/' + file)).blob());
+      this.audio.src = window.__fakeAppleBlobs[file];
+      if (play) await this.audio.play();
+    }
+    async stationSong(index) {
+      this.stationIndex = index;
+      this.nowPlayingItem = asItem(SHORT[index % SHORT.length]);
+      this.emit('nowPlayingItemDidChange', { item: this.nowPlayingItem });
+      await this.loadFile('signal-check-short.mp3', true);
+    }
+    async skipToNextItem() { if (this.station) await this.stationSong(this.stationIndex + 1); }
+    async skipToPreviousItem() { if (this.station) await this.stationSong(Math.max(0, this.stationIndex - 1)); }
     async setQueue(options) {
       window.__fakeAppleLog.queue.push(options);
+      if (options.station) {
+        if (options.station !== STATION.id) throw new Error('CONTENT_UNAVAILABLE');
+        this.station = options.station;
+        this.setState(States.loading);
+        await this.stationSong(0);
+        return;
+      }
+      this.station = null;
       const known = [...SONGS, ...SHORT, ...LIB_SONGS].some((s) => s.attributes.playParams.id === options.song);
       if (!known) throw new Error('CONTENT_UNAVAILABLE');
       this.setState(States.loading);
       const short = SHORT.some((s) => s.id === options.song);
       const file = short ? 'signal-check-short.mp3' : 'signal-check.mp3';
-      window.__fakeAppleBlobs ??= {};
-      window.__fakeAppleBlobs[file] ??= URL.createObjectURL(await (await fetch('/.verify/audio/' + file)).blob());
-      this.audio.src = window.__fakeAppleBlobs[file];
-      if (options.startPlaying) await this.audio.play();
+      this.nowPlayingItem = asItem([...SONGS, ...SHORT, ...LIB_SONGS].find((s) => s.attributes.playParams.id === options.song));
+      await this.loadFile(file, options.startPlaying);
     }
     async play() { await this.audio.play(); }
     async pause() { this.audio.pause(); }
     async stop() { this.setState(States.stopped); this.audio.pause(); }
     async seekToTime(seconds) { this.audio.currentTime = seconds; }
-    async request(path, params) {
-      window.__fakeAppleLog.api.push(path + (params ? ' ' + JSON.stringify(params) : ''));
+    async request(path, params, options) {
+      const method = options?.fetchOptions?.method ?? 'GET';
+      window.__fakeAppleLog.api.push((method === 'GET' ? '' : method + ' ') + path + (params ? ' ' + JSON.stringify(params) : ''));
       if (!this.isAuthorized && path.includes('/me/')) throw new Error('403 Forbidden');
       const ok = (body) => ({ data: body });
       const url = new URL(path, 'https://api.music.apple.com');
       const p = url.pathname;
+      if (p === '/v1/me/library' && method === 'POST') {
+        // Real API: 202 Accepted, empty body.
+        const ids = Object.entries(params ?? {}).filter(([k]) => /^ids\\[(songs|albums|playlists)\\]$/.test(k));
+        if (ids.length === 0) throw new Error('400 Bad Request');
+        window.__fakeAppleLog.added.push(params);
+        return ok(undefined);
+      }
+      // ---- home
+      if (p === '/v1/me/recommendations') {
+        return ok({ data: [
+          { id: 'rec1', type: 'personal-recommendation', attributes: { title: { stringForDisplay: 'Made for You' } }, relationships: { contents: { data: [PLAYLIST, STATION] } } },
+          { id: 'rec2', type: 'personal-recommendation', attributes: { title: { stringForDisplay: 'More Like The Understudies' } }, relationships: { contents: { data: [ALBUM] } } },
+        ] });
+      }
+      if (p === '/v1/me/recent/played') return ok({ data: [ALBUM, STATION, PLAYLIST] });
+      if (p === '/v1/me/recent/played/tracks') return ok({ data: [SONGS[0], SONGS[1], UNAVAILABLE] });
+      if (p === '/v1/me/history/heavy-rotation') return ok({ data: [ALBUM] });
+      if (p === '/v1/catalog/us/charts') {
+        return ok({ results: {
+          songs: [{ chart: 'most-played', name: 'Top Songs', data: SONGS.slice(0, 5), next: '/v1/catalog/us/charts?offset=5' }],
+          albums: [{ chart: 'most-played', name: 'Top Albums', data: [ALBUM] }],
+          playlists: [{ chart: 'most-played', name: 'Top Playlists', data: [PLAYLIST] }],
+        } });
+      }
+      if (p === '/v1/me/library/albums') return ok({ data: [LIB_ALBUM] });
+      if (p === '/v1/me/library/albums/l.album1/tracks') return ok({ data: LIB_SONGS });
       if (p === '/v1/catalog/us/search') return ok({ results: { songs: { data: [...SONGS.slice(0, 4), UNAVAILABLE] }, albums: { data: [ALBUM] }, playlists: { data: [PLAYLIST] } } });
       // Two pages, to exercise the "next" link.
       if (p === '/v1/catalog/us/albums/1001/tracks') return url.searchParams.get('offset') ? ok({ data: SONGS.slice(2, 4) }) : ok({ data: SONGS.slice(0, 2), next: '/v1/catalog/us/albums/1001/tracks?offset=2' });

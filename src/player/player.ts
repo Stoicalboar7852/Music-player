@@ -291,6 +291,7 @@ export class Player extends Emitter<PlayerEvents> {
   }
 
   async next() {
+    if (await this.skipWithinList(1)) return;
     const track = this.neighbour(1, this.repeat === 'all');
     if (track) await this.playTrack(track.id);
   }
@@ -301,9 +302,28 @@ export class Player extends Emitter<PlayerEvents> {
       await this.seek(0);
       return;
     }
+    if (await this.skipWithinList(-1)) return;
     const track = this.neighbour(-1, this.repeat === 'all');
     if (track) await this.playTrack(track.id);
     else await this.seek(0);
+  }
+
+  /** A queue item that is a whole list the service plays: Next and Previous move within it first. */
+  private async skipWithinList(direction: 1 | -1): Promise<boolean> {
+    const track = this.current;
+    if (!track?.context || !this.active?.skip || this.loading) return false;
+    try {
+      if (!(await this.active.skip(direction))) return false;
+    } catch {
+      return false;
+    }
+    this.nearEndSince = null;
+    if (!this.playing) {
+      this.playing = true;
+      this.userPaused = false;
+      this.emit('change', undefined);
+    }
+    return true;
   }
 
   async seek(seconds: number) {
@@ -335,7 +355,9 @@ export class Player extends Emitter<PlayerEvents> {
     if (!(duration > 1)) return;
     if (position >= duration - 1.5) this.nearEndSince ??= performance.now();
     else if (this.playing && position < duration - 3) this.nearEndSince = null;
-    if (this.nearEndSince !== null && !this.userPaused && performance.now() - this.nearEndSince > 3500) {
+    // A list the service plays itself gets longer: the next song's report can lag behind the last one's end.
+    const grace = this.current?.context ? 8000 : 3500;
+    if (this.nearEndSince !== null && !this.userPaused && performance.now() - this.nearEndSince > grace) {
       debug('player', `"${this.current?.title}" reached its end without the player saying so; moving on`);
       this.onEnded();
     }

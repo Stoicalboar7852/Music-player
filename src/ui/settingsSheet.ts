@@ -10,7 +10,7 @@ function field(label: string, control: Node, hint?: string | Node): HTMLElement 
   return h('div', { class: 'field' }, h('label', { text: label }), control, hint ? h('p', { class: 'hint' }, hint) : null);
 }
 
-function textInput(key: 'spotifyClientId' | 'youtubeApiKey', placeholder: string): HTMLInputElement {
+function textInput(key: 'spotifyClientId' | 'youtubeApiKey' | 'googleClientId', placeholder: string): HTMLInputElement {
   const input = h('input', { class: 'input', type: 'text', placeholder, value: settings.get(key), spellcheck: 'false', autocomplete: 'off' });
   input.addEventListener('change', () => settings.set({ [key]: input.value.trim() }));
   return input;
@@ -128,8 +128,19 @@ export function openSettings(app: App, section?: string) {
     h('div', { class: 'field stack' }, h('label', { text: 'Developer token (JWT)' }), appleToken, h('p', { class: 'hint', text: 'Tokens last at most six months; generate a new one when this stops working.' })),
 
     h('h3', { text: 'YouTube', 'data-section': 'youtube' }),
-    h('p', null, 'Pasting YouTube and YouTube Music links works with no setup. A YouTube Data API key is optional and adds search and playlist track names.'),
+    h('p', null, 'Pasting YouTube and YouTube Music links works with no setup. A YouTube Data API key is optional and adds search, popular music and playlist track names.'),
     field('Data API key (optional)', textInput('youtubeApiKey', 'AIza…')),
+    field(
+      'Google client ID (optional)',
+      textInput('googleClientId', '…apps.googleusercontent.com'),
+      h(
+        'span',
+        null,
+        'Lets you sign in with Google to see your own YouTube and YouTube Music playlists and liked videos. Create an OAuth client of type "Web application" with ',
+        h('code', { text: location.origin }),
+        ' as an authorised JavaScript origin (README, YouTube section).',
+      ),
+    ),
 
     h('h3', { text: 'About' }),
     h(

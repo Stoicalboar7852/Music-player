@@ -9,7 +9,11 @@ import { clear, h, icon } from './dom';
 function tileStatus(service: MusicService): { text: string; state: 'on' | 'ready' | 'off' } {
   const status = service.status();
   if (status.connected) {
-    if (service.signIn === false) return { text: status.label?.startsWith('Ready: links and search') ? 'Search and links' : 'Paste a link', state: 'on' };
+    if (service.signIn === false) {
+      const account = service.account?.status();
+      if (account?.signedIn) return { text: account.name ? `Signed in as ${account.name}` : 'Signed in', state: 'on' };
+      return { text: status.label?.startsWith('Ready: links and search') ? 'Search and links' : 'Paste a link', state: 'on' };
+    }
     return { text: status.account ? `Connected as ${status.account}` : 'Connected', state: 'on' };
   }
   if (!status.configured) return { text: service.id === 'spotify' ? 'Set up (needs Premium)' : 'Set up', state: 'off' };

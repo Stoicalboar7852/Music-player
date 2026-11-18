@@ -406,11 +406,23 @@ body.idle .hud > * {
 
 .meta .source {
   display: inline-block;
+  max-width: 100%;
   margin-top: 3px;
   font-size: 9.5px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+
+.now .like-btn {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin-left: -4px;
 }
 
 .transport {
@@ -1732,4 +1744,319 @@ body.idle .yt-frame {
   justify-content: center;
   gap: 8px;
   margin-bottom: 14px;
+}
+
+/* ---------------------------------------------------------------- browse */
+
+.browse-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.browse-head h3 {
+  margin: 0 !important;
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+.btn.ghost:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.back-btn {
+  margin: 16px 0 4px -8px;
+  padding-left: 8px;
+}
+
+.link-like {
+  padding: 0;
+  color: var(--text);
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s;
+  max-width: 100%;
+}
+
+.link-like:hover {
+  text-decoration-color: currentColor;
+}
+
+.row .row-title.link-like {
+  display: block;
+  font: inherit;
+  font-weight: 600;
+}
+
+.shelf {
+  margin-top: 18px;
+}
+
+.shelf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 30px;
+  margin: 0 0 6px 2px;
+}
+
+.shelf-head h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.shelf-note {
+  font-size: 12.5px;
+  color: var(--text-faint) !important;
+  margin: -2px 0 10px 2px !important;
+}
+
+.shelf-note.loading {
+  margin-top: 14px !important;
+}
+
+.shelf-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 132px;
+  gap: 14px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  padding: 4px 2px 12px;
+  margin: 0 -2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.shelf-row.wide {
+  grid-auto-columns: 196px;
+}
+
+.media-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  cursor: pointer;
+  scroll-snap-align: start;
+  border-radius: 12px;
+  outline-offset: 3px;
+}
+
+.media-art {
+  position: relative;
+  aspect-ratio: 1;
+  margin-bottom: 6px;
+  border-radius: 10px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  background: linear-gradient(135deg, rgba(122, 92, 255, 0.18), rgba(255, 61, 129, 0.12)), rgba(255, 255, 255, 0.04);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s var(--ease), box-shadow 0.2s;
+}
+
+.shelf-row.wide .media-art {
+  aspect-ratio: 16 / 9;
+}
+
+.media-art.liked {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+}
+
+.media-art img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-card:hover .media-art,
+.media-card:focus-visible .media-art {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.45);
+}
+
+.media-play {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #0b0b10;
+  background: var(--text);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(6px) scale(0.92);
+  transition:
+    opacity 0.18s,
+    transform 0.18s var(--ease);
+}
+
+.media-play .icon {
+  margin-left: 2px;
+}
+
+.media-card:hover .media-play,
+.media-card:focus-within .media-play {
+  opacity: 1;
+  transform: none;
+}
+
+.media-play:hover {
+  transform: scale(1.06) !important;
+}
+
+.media-badge {
+  position: absolute;
+  left: 7px;
+  top: 7px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  background: rgba(10, 10, 16, 0.62);
+  backdrop-filter: blur(8px);
+}
+
+.media-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(10, 10, 16, 0.62);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+
+.media-tools .icon-btn {
+  width: 28px;
+  height: 28px;
+  color: var(--text);
+}
+
+.media-tools .icon-btn .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.media-card:hover .media-tools,
+.media-card:focus-within .media-tools {
+  opacity: 1;
+}
+
+.media-tools:empty {
+  display: none;
+}
+
+.icon-btn.saved {
+  color: var(--accent) !important;
+}
+
+.collection-head {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 22px;
+  align-items: end;
+  margin: 10px 0 16px;
+}
+
+.collection-head .media-art {
+  margin: 0;
+}
+
+.collection-meta .actions {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.collection-meta .icon-btn.btn-like {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.collection-title {
+  margin: 4px 0 4px !important;
+  font-size: 24px !important;
+  font-weight: 720 !important;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.collection-sub {
+  margin: 0 !important;
+}
+
+.account-offer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+}
+
+.account-offer .hint-text {
+  max-width: 46ch;
+}
+
+@media (max-width: 760px) {
+  .collection-head {
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: 14px;
+  }
+  .collection-title {
+    font-size: 19px !important;
+  }
 }
