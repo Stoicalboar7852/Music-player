@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
   push:
     tags: ['v*']
-    branches: [v2, main]
+    branches: [v2, v3, main]
     paths:
       - 'desktop/**'
       - 'src/**'

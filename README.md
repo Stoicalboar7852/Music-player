@@ -9,9 +9,15 @@ A music player for the browser whose main attraction is its visualizers. Put mus
 - **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, crossfades between songs (and beat-matched DJ mixes between local files), a visualizer gallery, auto-cycling visualizers.
 - **Stack:** Vite + TypeScript, raw WebGL2, Web Audio. No backend and no framework. Runs in Chrome or Edge.
 
-## Version 2 (this branch)
+## Version 3 (this branch, in progress)
 
-This is the `v2` branch. The `v1` branch keeps the first version unchanged. What's new in version 2:
+This is the `v3` branch. The `v1` and `v2` branches keep the earlier versions unchanged. What's new so far:
+
+- **A presenter window for an audience screen.** **Present** (the screen button in the top bar, or <kbd>D</kbd>) opens a second window with nothing but the visuals, for a projector, a TV or a stage screen, while the main window stays your controller. It runs in step with the main window and keeps going when that window is hidden. Overlays switch on from the main window only: a QR code for the song (its Spotify, Apple Music or YouTube page), the title and artist, a logo, blackout and freeze. See [Presenter window](#presenter-window).
+
+## Version 2
+
+What version 2 added:
 
 - **Songs move on by themselves.** When a Spotify song finished, the next one in the queue didn't start until you pressed skip. Spotify's player only reports when something changes, so a song that played through untouched never gave Phosphor the end signal it was waiting for. Phosphor now recognises the end in several independent ways (including Spotify's own autoplay taking over, Spotify swapping in another copy of a song, and Spotify saying nothing at all). A safety net moves any source on if it sits at the very end without reporting it.
 - **Now Playing shows the track.** On macOS, Phosphor's Now Playing entry showed the tab title (e.g. "Rise · Lynnic — Phosphor") with no artist or artwork while Spotify or YouTube played. Their players live in embedded frames that claim the media keys without setting any track info, and Chrome was showing that frame's empty entry. Phosphor now keeps its own page in charge, so Now Playing shows the title, artist and artwork, and media keys control Phosphor's queue. In the browser the entry still carries Chrome's icon; the [desktop app](#desktop-app) shows Phosphor's own.
@@ -67,6 +73,8 @@ Local files, system audio capture and YouTube links work without any setup. Spot
 | <kbd>O</kbd> | Add music |
 | <kbd>C</kbd> | Capture system or tab audio |
 | <kbd>F</kbd> | Fullscreen (or double-click the visuals) |
+| <kbd>D</kbd> | Present: open the [presenter window](#presenter-window), then show or hide its panel |
+| <kbd>Shift</kbd>+<kbd>Q</kbd> <kbd>T</kbd> <kbd>L</kbd> <kbd>B</kbd> <kbd>Z</kbd> | Presenter overlays: QR code, title, logo, blackout, freeze |
 | <kbd>,</kbd> / <kbd>?</kbd> | Settings / list of shortcuts |
 | <kbd>Esc</kbd> | Close whatever is open |
 
@@ -94,6 +102,29 @@ Settings, the last visualizer, volume, shuffle and repeat are remembered in the 
   - Turn on `?debug` to see each plan in the console, e.g. `mixing into "…": blend over 32 beats from beat 35 (17.4 s), tempo ×1.051, keys compatible`.
 
 Streaming songs can't be mixed this way. The services' web players don't give a page their audio (Phosphor only hears it through tab capture, as it plays), so it can't be filtered or analysed ahead of time, and Spotify's and Apple's players have no way to change a song's tempo. For streaming, Phosphor crossfades or fades, as above.
+
+### Presenter window
+
+![The presenter window with the title and the QR code for the song](docs/screenshots/presenter-qr.png)
+
+**Present** (the screen button in the top bar, or <kbd>D</kbd>) opens a second window with only the visuals, for a screen your audience sees. The main window stays the controller: the presenter window has no buttons or menus at all.
+
+- **Getting it onto the other screen.** In Chrome or Edge with a second screen connected, once you've allowed **Manage windows on all your displays** (Chrome asks the first time), it opens covering the other screen; otherwise it opens as a window you drag there. **Fill a screen** in the Present panel makes it full screen on the screen you pick, from the main window (your click is handed to the presenter window, so you don't have to reach the other screen). Double-click or <kbd>F</kbd> in the presenter does the same. The [desktop app](#desktop-app) puts it full screen on the other display by itself.
+- **In step with the main window.** It shows the same visualizer, MilkDrop preset, artwork, colours and quality, and changes when you change them. It reads the main window's newest analysis right before drawing each frame, so it runs no later than the main window does (0 ms behind, median, in the tests). It keeps going while the main window is minimised or covered, for instance by presentation software. A presenter page opened by hand (`present.html`, without the button) also works, receiving frames over a channel within a few milliseconds.
+- **Overlays**, switched on only from the main window (the Present panel's tiles, or the keys):
+
+  | Overlay | Key | What it shows |
+  | --- | --- | --- |
+  | QR code | <kbd>Shift</kbd>+<kbd>Q</kbd> | The playing song's own page: `open.spotify.com/track/…`, `music.apple.com/…/song/…` or `youtube.com/watch?v=…`. Hidden for songs without one (local files, Apple Music songs only in your library). Left on, it appears by itself when a song with a link starts. In a playlist Spotify or Apple Music plays itself, it follows the song playing now. Small, medium or large. |
+  | Title | <kbd>Shift</kbd>+<kbd>T</kbd> | Title, artist and album with the artwork, lower third |
+  | Logo | <kbd>Shift</kbd>+<kbd>L</kbd> | Top right: Phosphor's, or an image you choose in the panel (kept in this browser) |
+  | Blackout | <kbd>Shift</kbd>+<kbd>B</kbd> | Fades to black (and stops drawing underneath) |
+  | Freeze | <kbd>Shift</kbd>+<kbd>Z</kbd> | Holds the current picture while the music plays on |
+
+- **Preview in this window**, in the panel: turn it off and the main window stops drawing while the presenter shows the visuals (its last picture stays, dimmed), which saves graphics power on a laptop driving a projector.
+- If the main window closes or reloads, the presenter fades to black and carries on when it's back.
+
+<img src="docs/screenshots/presenter-panel.png" alt="The Present panel in the main window" width="640">
 
 ## Visualizers
 
@@ -269,6 +300,7 @@ While music plays, the browser tab's icon becomes a tiny live visualizer (four b
 - **The whole computer's sound, without the share dialog.** **System audio** (and the banner on a streaming song) listens straight away. On Windows this is the system's loopback. On macOS, Electron documents system audio as Windows-only; Phosphor also turns on Chromium's macOS system-audio features, which may work on macOS 14.2 and later, but I couldn't test that without a Mac. If no sound arrives, Phosphor says so: use **Audio input device** with a loopback driver such as BlackHole, or tab sharing in the browser. The first capture on a Mac asks for **Screen & System Audio Recording** permission; only the sound is used.
 - **Its own name and icon** in Now Playing, the media keys, the Dock and the taskbar; Previous, Play/Pause and Next buttons in the Windows taskbar preview.
 - **Closing the window keeps the music playing.** The menu bar or tray icon, the Dock or the taskbar bring it back; quit from the menu or the icon's menu.
+- **The presenter window goes straight to the other display.** With a second display connected, **Present** opens the [presenter window](#presenter-window) full screen on it, no permission needed; **Fill a screen** lists the displays by name and moves it to the one you pick.
 
 <br clear="right">
 
@@ -466,6 +498,7 @@ It checks:
 - **Rhythm and mixing:** see [How the visuals follow the music](#how-the-visuals-follow-the-music) for the beat-tracking ground truth. The same script checks the mix planner on two copies of the demo track (124 and 118 BPM): keys on the Camelot wheel, each style starting on a phrase of the outgoing song and a downbeat of the incoming one, every beat of the overlap meeting a beat of the other song, the tempo ratio, half-length overlaps for clashing keys, and the fallbacks.
 - **Between songs:** a 3-second crossfade between two local files (the next one starts before the first ends, the summed power stays at 1, the queue moves on once); a blend mix from the 118 BPM version into the 124 BPM one (both grids and keys ready first, several bars of overlap, the incoming song time-stretched to the outgoing tempo with its pitch kept, beats within a tenth of a beat 90% of the time, the bass swap); a rise (the outgoing song filtered upward); a local file crossfading into YouTube (both players sounding at once); and two YouTube songs in a row (fade out, then in).
 - **Installable app:** builds the app and serves it (`vite preview`), then checks the manifest and its icons (loaded, at their stated sizes, one maskable), that the service worker installs and takes charge, that Chrome reports no installability problems (in a normal, non-incognito profile), the Settings install section, the live tab icon, that the app opens and plays the demo offline, and on an emulated iPhone the microphone option (fed the test track as a fake microphone), the streaming banner offering **Listen**, and the phone notes in Settings.
+- **Presenter window:** opened with the Present button, it has no controls and shows no overlays until asked; it follows visualizer and MilkDrop preset changes and has the artwork; it gets every beat the main window detects; each frame reaches it within a few milliseconds, and it runs under 50 ms behind the main window (0 ms median, reading the newest analysis before each draw), also with the main window not drawing at all; title, logo (Phosphor's and a chosen image), blackout (the screen measured black), freeze (identical screenshots while music plays) and back; the QR code hidden for a local file, then appearing for a YouTube song and decoding, from a screenshot, to the song's link; the three QR sizes; the links for each service; Preview off; Fill a screen (with the screens permission refused and allowed); a presenter page opened by hand; reconnecting after the main window reloads; closing. In the desktop app's page, Fill a screen lists the displays and asks the app to use the chosen one.
 - **Player and interface:** tags and art from each format, decoding each format, every keyboard shortcut, visualizer crossfades, the gallery, auto-cycle, queue editing, drag and drop, folders with cover images, an undecodable file, the idle fade, fullscreen, the demo track, settings persistence.
 - **Capture:** real `getDisplayMedia` capture of another tab and of the app's own tab, including that the captured audio has no path to the speakers.
 - **Spotify, Apple Music, YouTube:** each against a local simulation of the service (in `scripts/mocks`) that follows the documented behaviour: OAuth with real PKCE verification, the Web API's 2026 response shapes, the playback SDK's events, MusicKit's queue and events, the IFrame API's states and errors, the Data API with quotas and pagination. Like the real players, the simulated Spotify and YouTube players run inside cross-origin frames, and Spotify's reports state only when something changes. Songs are played all the way to their end on each service, including Spotify's quirks (autoplay, relinked songs, a silent end). Spotify's Spotify-app mode is tested against a simulated Spotify app: a Connect device with its own clock, where songs end, lists move on and autoplay takes over by themselves, and which is closed until the test opens it. These prove Phosphor's side of each integration. They cannot prove the real services behave as documented; see below.

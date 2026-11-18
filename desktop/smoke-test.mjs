@@ -2,12 +2,14 @@
 // right after electron-builder (see .github/workflows/desktop.yml):
 //
 //   node smoke-test.mjs path/to/Phosphor(.exe)
+//   node smoke-test.mjs node_modules/electron/dist/electron .   (unpackaged, for a local run)
 //
 // It drives the real app with Playwright: the window, the local server, the
 // bridge to the page, the demo playing, the menu bar or tray icon animating,
-// the commands, the mini player. A CI machine has no sound card and no screen
-// recording permission, so whether system audio arrives is reported but not
-// required. Writes release/smoke-report.json and screenshots next to it.
+// the commands, the mini player, the presenter window. A CI machine has no
+// sound card and no screen recording permission, so whether system audio
+// arrives is reported but not required. Writes release/smoke-report.json and
+// screenshots next to it.
 
 import { _electron as electron } from 'playwright';
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -29,7 +31,10 @@ function check(name, ok, detail = '', { required = true } = {}) {
   console.log(`${ok ? '  ok  ' : required ? ' FAIL ' : ' note '} ${name}${detail ? `  (${detail})` : ''}`);
 }
 
-const app = await electron.launch({ executablePath: path.resolve(executable), timeout: 120_000 });
+// An unpackaged run passes the app's folder; Linux as root needs --no-sandbox.
+const appDir = process.argv[3];
+const args = [...(appDir ? [path.resolve(appDir)] : []), ...(process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : [])];
+const app = await electron.launch({ executablePath: path.resolve(executable), args, timeout: 120_000 });
 try {
   const page = await app.firstWindow();
   page.on('pageerror', (error) => console.log(`  page error: ${error.message}`));
@@ -70,6 +75,51 @@ try {
     check('the mini player opens with the song', visible && title === 'Signal Check', title);
     await mini.screenshot({ path: path.join(out, 'smoke-mini.png') }).catch(() => {});
   } else check('the mini player opens with the song', false, 'no window');
+
+  // The presenter window: opened from the page, placed by the app (with one
+  // display, as in CI, as a window; with two, full screen on the other).
+  await page.click('.present-btn');
+  let presenter = null;
+  for (let i = 0; i < 60 && !presenter; i++) {
+    presenter = app.windows().find((w) => w.url().includes('present.html')) ?? null;
+    if (!presenter) await page.waitForTimeout(250);
+  }
+  if (presenter) {
+    await presenter.waitForLoadState();
+    const drawing = await presenter.waitForFunction(() => window.__presenter?.renderer.adopted, null, { timeout: 15_000 }).then(() => true, () => false);
+    const placed = await app.evaluate(() => globalThis.__phosphorDesktop.presenter);
+    check('the presenter window opens and draws the visuals from the main window', drawing && /present\.html$/.test(placed?.url ?? ''), JSON.stringify(placed));
+    await page.waitForTimeout(2000);
+    const behind = await presenter.evaluate(() => {
+      const l = [...window.__presenter.latencies].sort((a, b) => a - b);
+      return l.length ? l[Math.floor(l.length / 2)] : null;
+    });
+    check('...in step with it (median under 50 ms behind the main window)', behind !== null && behind < 50, `${behind} ms`);
+    await presenter.screenshot({ path: path.join(out, 'smoke-presenter.png') }).catch(() => {});
+    // Fill a screen: with one display the app fills that one.
+    await page.click('.presenter-panel >> text=Fill a screen');
+    const full = await app
+      .evaluate(async () => {
+        for (let i = 0; i < 40; i++) {
+          if (globalThis.__phosphorDesktop.presenter?.fullScreen) return true;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return false;
+      })
+      .catch(() => false);
+    check('Fill a screen makes the app put the presenter full screen', full, '', { required: false });
+    await page.click('.presenter-panel >> text=Close presenter');
+    const closed = await app
+      .evaluate(async () => {
+        for (let i = 0; i < 40; i++) {
+          if (!globalThis.__phosphorDesktop.presenter) return true;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        return false;
+      })
+      .catch(() => false);
+    check('Close presenter closes it', closed);
+  } else check('the presenter window opens and draws the visuals from the main window', false, 'no window');
 
   // System audio, asked for the way the page asks: from a click (Playwright's
   // click counts as the user's).
