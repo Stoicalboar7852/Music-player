@@ -12,7 +12,7 @@ It plays local files, whatever your computer is playing (system or tab audio), S
 
 | Branch | What it is | Pick it if |
 | --- | --- | --- |
-| [**v1**](../../tree/v1) | The first complete version (tag [`v1.0.0`](../../releases/tag/v1.0.0)): 12 visualizers, local files, system audio capture, Spotify, Apple Music and YouTube. | You want the stable version. |
+| [**v1**](../../tree/v1) | The first complete version, kept as it was: 12 visualizers, local files, system audio capture, Spotify, Apple Music and YouTube. | You want the stable version. |
 | [**v2**](../../tree/v2) | The next version, in progress. Everything in v1, plus the fixes and features listed [below](#whats-coming-in-v2) as they land. | You want the newest features and don't mind some being unfinished. |
 
 To get the code, open the branch, click the green **Code** button and choose **Download ZIP**. Or, with git: `git clone --branch v1 <this repository's URL>` (use `v2` for the newer version).
