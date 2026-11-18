@@ -2104,11 +2104,11 @@ async function desktopApp(browser) {
   await page.evaluate(() => window.__phosphor.player.pause());
   await page.evaluate(() => window.__phosphor.app.openSheet('sources', 'capture'));
   await page.waitForTimeout(300);
-  const panel = await page.locator('.sheet').innerText();
+  const panel = await page.locator('.sheet[aria-label="Add music"]').innerText();
   check('System audio explains the Mac permission and the fallback, instead of the share dialog', /Listen to this computer/.test(panel) && /Screen & System Audio Recording/.test(panel) && !/What to pick in the share dialog/.test(panel));
   await page.evaluate(() => window.__phosphor.app.openSheet('settings', 'spotify'));
   await page.waitForTimeout(300);
-  const spotifySettings = await page.locator('.sheet').innerText();
+  const spotifySettings = await page.locator('.sheet[aria-label="Settings"]').innerText();
   const connect = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode);
   check("Spotify plays through the Spotify app in the desktop app (Electron has no Widevine for its web player), and Settings says so", connect && /Plays in\s*The Spotify app/.test(spotifySettings), spotifySettings.match(/Plays in[^\n]*\n?[^\n]*/)?.[0]);
   await context.close();
