@@ -4,7 +4,7 @@ A music player whose main attraction is its visualizers. Put music on, go fullsc
 
 ![Album Halo, coloured from the cover art](docs/hero.png)
 
-It plays local files, whatever your computer is playing (system or tab audio), Spotify, Apple Music and YouTube / YouTube Music. It's built with Vite, TypeScript, WebGL2 and Web Audio, needs no backend, and runs in Chrome or Edge.
+It plays local files, whatever your computer is playing (system or tab audio), Spotify, Apple Music and YouTube / YouTube Music. It's built with Vite, TypeScript, WebGL2 and Web Audio, needs no backend, and runs in Chrome or Edge, as an app you can install (on a computer or a phone), or as a desktop app for macOS and Windows.
 
 > **This branch only holds this page.** The app lives on the branches below. Pick one first.
 
@@ -13,7 +13,7 @@ It plays local files, whatever your computer is playing (system or tab audio), S
 | Branch | What it is | Pick it if |
 | --- | --- | --- |
 | [**v1**](../../tree/v1) | The first complete version, kept as it was: 12 visualizers, local files, system audio capture, Spotify, Apple Music and YouTube. | You want the stable version. |
-| [**v2**](../../tree/v2) | The next version, in progress. Everything in v1, plus the fixes and features listed [below](#whats-coming-in-v2) as they land. | You want the newest features and don't mind some being unfinished. |
+| [**v2**](../../tree/v2) | The new version: everything in v1, plus the fixes and features listed [below](#whats-new-in-v2): 25 visualizers, beat tracking, crossfades and DJ mixes, playlists across services, a phone-friendly installable app and a desktop app. | You want the newest features. It has had less time with the real streaming services than v1 (see its README). |
 
 To get the code, open the branch, click the green **Code** button and choose **Download ZIP**. Or, with git: `git clone --branch v1 <this repository's URL>` (use `v2` for the newer version).
 
@@ -53,19 +53,27 @@ Streaming services don't let web pages read their audio, so the visualizers reac
 
 ## The visualizers
 
+Version 2 has twenty-five, in five categories (classic, modern, 3D, retro and arcade, simulations):
+
+![The twenty-five visualizers of version 2](docs/visualizers-v2.jpg)
+
+Version 1's twelve:
+
 ![Classic visualizers](docs/visualizers-classic.png)
 
 ![Modern visualizers](docs/visualizers-modern.png)
 
 ![The player](docs/interface.png)
 
-## What's coming in v2
+## What's new in v2
 
-Work happens on the [v2](../../tree/v2) branch, in this order:
+All of it is on the [v2](../../tree/v2) branch; its README has the details.
 
-1. **Fixes** (done): the next song starts by itself when a Spotify song ends; macOS Now Playing shows the track, artist and artwork, and media keys control Phosphor.
-2. **Easier start** (done): streaming services on the first screen with their live state; starting a streaming song opens the share-audio dialog straight away.
-3. **Library** (done): a home view for each service (recently played, top songs, your playlists and albums, Apple's For You and charts, YouTube's popular music and, with Google sign-in, your own playlists), Spotify-made playlists played by link, saving to your Spotify or Apple Music library, and Phosphor playlists that mix tracks and whole playlists from every source, updating live.
-4. **Better music reaction:** beat tracking that follows the drums rather than vocals, with different parts of each visualizer reacting to different parts of the song, plus at least 12 new visualizers.
-5. **Playback:** crossfade, and DJ-style "mix" transitions for local files.
-6. **Apps:** desktop apps for macOS and Windows (with a menu-bar visualizer), and an installable phone version.
+1. **Fixes:** the next song starts by itself when a Spotify song ends; macOS Now Playing shows the track, artist and artwork, and media keys control Phosphor.
+2. **Easier start:** streaming services on the first screen with their live state; starting a streaming song opens the share-audio dialog straight away.
+3. **Library:** a home view for each service (recently played, top songs, your playlists and albums, Apple's For You and charts, YouTube's popular music and, with Google sign-in, your own playlists), Spotify-made playlists played by link, saving to your Spotify or Apple Music library, and Phosphor playlists that mix tracks and whole playlists from every source, updating live.
+4. **Better music reaction:** beat tracking that follows the drums, not the vocals (tested against signals with known beats), with kicks, the bassline, vocals, hi-hats and drops each driving something different in every visualizer, plus thirteen new visualizers in five categories.
+5. **Playback:** crossfades of up to 12 seconds between any two sources, and DJ-style mixes between local files (tempo matched without changing pitch, beats and bars lined up, keys taken into account).
+6. **Apps:**
+   - **Install it** from Chrome or Edge on a computer, Chrome on Android, or Safari on iPhone and iPad (Share, Add to Home Screen). It opens in its own window and works offline with your own files. Phones can't share other apps' audio with a page, so there it listens through the microphone.
+   - **A desktop app for macOS and Windows,** with a live visualizer in the macOS menu bar or the Windows tray and a mini player under it. It listens to the whole computer without the share dialog, shows as Phosphor in Now Playing, and plays Spotify through the Spotify app. Download it from the repository's **Actions** tab: open the latest **Desktop app** run and get **Phosphor-macOS** (disk images for Apple silicon and Intel Macs) or **Phosphor-Windows** (an installer) under *Artifacts*. Those downloads are kept for 14 days; tagging a version (for example `v2.0.0`) makes a permanent release with the installers attached. They aren't signed with a paid certificate, so the first launch needs an extra click; the v2 README explains it.
