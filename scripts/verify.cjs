@@ -766,7 +766,7 @@ async function capture() {
     await page.waitForTimeout(600);
     let s = await state(page);
     check('before sharing, the other tab is inaudible to the visualizers', s.level < 0.01, `level ${s.level.toFixed(3)}`);
-    await page.click('.welcome >> text=System audio');
+    await page.click('.welcome-link >> text=Share system or tab audio');
     await page.click('text=Capture system or tab audio');
     await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).catch(() => {});
     await page.waitForTimeout(3500);
