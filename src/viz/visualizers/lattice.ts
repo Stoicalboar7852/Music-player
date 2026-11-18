@@ -109,7 +109,7 @@ void main() {
 export default defineVisualizer({
   id: 'lattice',
   name: 'Lattice Flight',
-  family: 'modern',
+  family: '3d',
   order: 85,
   description: 'A raymarched flight through an endless grid of cubes, each pulsing to its own frequency.',
   create(ctx) {

@@ -7,7 +7,16 @@
 import type { AudioFrame } from '../audio/analysis';
 import type { GL } from '../gl/util';
 
-export type Family = 'classic' | 'modern';
+/** Gallery categories. */
+export type Family = 'classic' | 'modern' | '3d' | 'retro' | 'simulation';
+
+export const FAMILY_NAMES: Record<Family, string> = {
+  classic: 'Classic',
+  modern: 'Modern',
+  '3d': '3D',
+  retro: 'Retro & arcade',
+  simulation: 'Simulations',
+};
 
 /** Texture units reserved for the shared audio/artwork textures. */
 export const UNIT_ARTWORK = 12;

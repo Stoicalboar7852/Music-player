@@ -86,7 +86,7 @@ void main() {
 export default defineVisualizer({
   id: 'tunnel',
   name: 'Tunnel',
-  family: 'classic',
+  family: 'retro',
   order: 40,
   description: 'A tiled demoscene tunnel where rings of spectrum fly toward you.',
   create(ctx) {

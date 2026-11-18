@@ -119,7 +119,7 @@ export class Program {
   }
 }
 
-export type TargetFormat = 'rgba8' | 'rgba16f' | 'rg16f' | 'r16f';
+export type TargetFormat = 'rgba8' | 'rgba16f' | 'rgba32f' | 'rg16f' | 'r16f';
 
 export interface TargetOptions {
   format?: TargetFormat;
@@ -132,6 +132,8 @@ function formatInfo(gl: GL, format: TargetFormat): [internal: number, fmt: numbe
   switch (format) {
     case 'rgba16f':
       return [gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT];
+    case 'rgba32f':
+      return [gl.RGBA32F, gl.RGBA, gl.FLOAT];
     case 'rg16f':
       return [gl.RG16F, gl.RG, gl.HALF_FLOAT];
     case 'r16f':

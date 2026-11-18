@@ -124,7 +124,7 @@ void main() {
 export default defineVisualizer({
   id: 'orb',
   name: 'Pulse Orb',
-  family: 'modern',
+  family: '3d',
   order: 80,
   description: 'A raymarched liquid-metal sphere that swells with bass and ripples with the spectrum.',
   create(ctx) {

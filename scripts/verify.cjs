@@ -186,10 +186,10 @@ async function visualizers(browser) {
   const hide = await page.addStyleTag({ content: '.hud, .toasts { display: none !important; }' });
 
   const ids = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.id));
-  check('at least twelve visualizers are registered', ids.length >= 12, `${ids.length}`);
+  check('at least twenty-four visualizers are registered (twelve new in v2)', ids.length >= 24, `${ids.length}`);
   const families = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.family));
-  const classic = families.filter((f) => f === 'classic').length;
-  check('both families are represented roughly equally', classic >= 5 && ids.length - classic >= 5, `${classic} classic, ${ids.length - classic} modern`);
+  const counts = ['classic', 'modern', '3d', 'retro', 'simulation'].map((f) => `${f} ${families.filter((x) => x === f).length}`);
+  check('every gallery category has at least three', counts.every((c) => Number(c.split(' ')[1]) >= 3), counts.join(', '));
 
   for (const id of ids) {
     // Start each one from the same busy passage of the track.

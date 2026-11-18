@@ -1,8 +1,8 @@
-// The visualizer gallery: pick one, filter by family, set up auto-cycling.
+// The visualizer gallery: pick one, filter by category, set up auto-cycling.
 
 import type { App } from '../app/app';
 import { settings } from '../app/settings';
-import type { Family } from '../viz/types';
+import { FAMILY_NAMES, type Family } from '../viz/types';
 import { clear, h } from './dom';
 
 export const CYCLE_CHOICES: [number, string][] = [
@@ -66,7 +66,7 @@ export function openGallery(app: App) {
         h(
           'div',
           { class: 'card-body' },
-          h('div', { class: 'card-name' }, def.name, h('span', { class: 'tag', text: def.family })),
+          h('div', { class: 'card-name' }, def.name, h('span', { class: 'tag', text: FAMILY_NAMES[def.family] })),
           h('div', { class: 'card-desc', text: def.description }),
         ),
       );
@@ -82,11 +82,7 @@ export function openGallery(app: App) {
     'div',
     { class: 'gallery-bar' },
     segmented<Family | 'all'>(
-      [
-        ['all', 'All'],
-        ['classic', 'Classic'],
-        ['modern', 'Modern'],
-      ],
+      [['all', 'All'], ...(Object.entries(FAMILY_NAMES) as [Family, string][])],
       filter,
       (value) => {
         filter = value;

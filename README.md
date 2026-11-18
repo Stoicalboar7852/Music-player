@@ -1,11 +1,11 @@
 # Phosphor
 
-A music player for the browser whose main attraction is its visualizers. Put music on, press <kbd>F</kbd>, and the interface fades away to leave twelve audio-reactive visualizers filling the screen.
+A music player for the browser whose main attraction is its visualizers. Put music on, press <kbd>F</kbd>, and the interface fades away to leave twenty-five audio-reactive visualizers filling the screen.
 
 ![Album Halo, with colours taken from the cover art](docs/screenshots/radial.png)
 
 - **Sources:** local files (MP3, FLAC, WAV, M4A/AAC, OGG/Opus and anything else Chrome or Edge decodes), whatever your computer is playing (system or tab audio capture), Spotify, Apple Music, and YouTube / YouTube Music.
-- **Visualizers:** six classic (spectrum bars, oscilloscope, feedback trails, tunnel, kaleidoscope, real MilkDrop presets) and six modern (GPU particles, two raymarched scenes, a 3D frequency terrain, a fluid simulation, and a radial spectrum around the album art). Bass, mids, treble and beats each drive something different in every one of them.
+- **Visualizers:** twenty-five in five categories: classic (spectrum bars, oscilloscope, feedback trails, kaleidoscope, real MilkDrop presets, a spectrogram, ridgelines), modern (GPU particles, a radial spectrum around the album art, a laser show, a mandala), 3D (raymarched orb, lattice and crystal cave, a frequency terrain, a ringed planet, light ribbons), retro and arcade (a demoscene tunnel, a pixel-art night drive, a self-playing pixel shooter, vector-monitor wireframes) and simulations (fluid, reaction-diffusion, a cellular automaton, a slime mould). Kicks, the bassline, vocals, hi-hats and drops each drive something different in every one of them.
 - **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, a visualizer gallery, auto-cycling with crossfades.
 - **Stack:** Vite + TypeScript, raw WebGL2, Web Audio. No backend and no framework. Runs in Chrome or Edge.
 
@@ -21,9 +21,10 @@ This is the `v2` branch. The `v1` branch keeps the first version unchanged. V2 i
 - **Phosphor playlists** (<kbd>B</kbd>, or the library button). Mix songs from every source in one playlist; link a Spotify, Apple Music or YouTube playlist so it's fetched fresh each time it plays; put playlists inside playlists (loops are refused); play in order, shuffled, or alternating between sources; export and import as JSON. Local files are reopened from disk after a restart, where Chrome allows it.
 - **Browse each service.** Each service's tab in **Add music** opens on a home view built from what its API offers for your account, with album and playlist pages, and a heart to save to your library. See [Streaming services](#streaming-services) for what each one can and can't show.
 
+- **Thirteen new visualizers, five gallery categories.** Spectrogram and Ridgelines (classic), Laser Show and Petals (modern), Ringed Planet, Crystal Cavern and Ribbons (3D), Neon Racer, Starfighter and Vector Arcade (retro and arcade: original takes on arcade genres, not copies of any game), and Reaction-Diffusion, Life and Slime Mold (simulations). The gallery filters by category. See [Visualizers](#visualizers).
 - **Beat tracking that follows the drums.** The analysis now separates what is percussive from what is held (singing, chords, the bassline), finds kicks, snares and hi-hats in the percussive part, and locks onto the tempo, the beat and the bar. Local files get their beats worked out ahead of time in the background, so beats land exactly. It also follows the bassline, the vocals and leads, brightness and energy, and spots build-ups and drops. Every visualizer was rewired so big pulses come from kicks and beats, continuous motion from the bassline, colour and detail from the vocals, sparkle from the hi-hats, and scene changes from drops. A singer or a pad on its own no longer makes anything pulse. See [How the visuals follow the music](#how-the-visuals-follow-the-music).
 
-Still to come: more visualizers, crossfade and mix transitions, and desktop and phone apps.
+Still to come: crossfade and mix transitions, and desktop and phone apps.
 
 ## Quick start
 
@@ -90,14 +91,32 @@ Settings, the last visualizer, volume, shuffle and repeat are remembered in the 
 | 0 | **Frequency Terrain** – a landscape built from the last few seconds of spectrum | height, sun size, horizon glow | ridges | aurora, wire shimmer, stars | sun pulse, grid flash |
 | | **Fluid** – Navier–Stokes ink simulation | fountain from the bottom | jets from the sides | circling nozzles, finer swirls | ink bursts; a drop blasts from the centre |
 | | **Album Halo** – cover art ringed by a radial spectrum and waveform halo | disc swells, rim light | spectrum bars | sparks | ripples leave the disc |
+| | **Spectrogram** (classic) – the scrolling waterfall: pitch up the screen, time across it | low rows heat up | middle rows; colour | top rows glint | the newest column flares; every beat leaves a grid line that scrolls away (bar lines brighter) |
+| | **Ridgelines** (classic) – recent sound stacked into a range of glowing lines, newest at the front | ridges rise | line colour | peaks glint | the front ridge flashes |
+| | **Laser Show** (modern) – beams sweep through stage haze across the bar | stage glow | beam colours | glitter along the beams | beams flash and widen; a new pattern on each drop |
+| | **Petals** (modern) – a mandala of polar roses, each petal one band | the flower swells | tint, petal curl | petal tips glint | bloom; the petal count changes on drops |
+| | **Ringed Planet** (3D) – a world whose rings are the spectrum, bass inside, treble outside | continents rise | sky tint | ring glitter, city lights | a shockwave through the rings; drops swing the camera |
+| | **Crystal Cavern** (3D) – a flight through a cave of crystals, each one a band | glow | crystal tint | facet glints | lantern flash and speed; drops take a new passage |
+| | **Ribbons** (3D) – ribbons of light winding through space, each one a band | how far they roam | twist and tint | sparks run along them | thrown outward; drops retie the knot |
+| | **Neon Racer** (retro) – a pixel-art night drive on an endless road | the road bends | skyline colours | windows twinkle | speed surges, kerbs flash, snares strobe the posts; drops change the time of night |
+| | **Starfighter** (retro) – a pixel shooter that plays itself against a formation made of the spectrum | the ship weaves | crystal tint | stars twinkle, the engine flickers | the ship fires on kicks, snares burst crystals; a new wave on drops |
+| | **Vector Arcade** (retro) – glowing wireframes on a vector monitor, with afterglow | | spin and tint | single edges flash | shapes punch out; the floor rolls one cell per beat; new shapes on drops |
+| | **Reaction-Diffusion** (simulation) – two chemicals growing coral, cells, worms or mazes | reaction rate | reaction rate, tint | edges glint | new seeds grow; drops change the kind of growth |
+| | **Life** (simulation) – a cellular automaton stepping four generations a beat | trail glow | tint | sparkles | kicks plant patterns, snares launch gliders; drops change the rules |
+| | **Slime Mold** (simulation) – 65,000 agents weaving trail networks like a slime mould | how strongly paths are marked | how widely they look; tint | glitter on busy paths | scattered outward; drops start a new colony |
 
-The modern family (and Album Halo's disc) take their colours from the current track's artwork; the interface accent colour follows it too. With no artwork, Album Halo shows a spinning record instead.
+The gallery (<kbd>G</kbd>) filters by category: Classic, Modern, 3D, Retro & arcade, Simulations. Most visualizers take their colours from the current track's artwork; the interface accent colour follows it too. With no artwork, Album Halo shows a spinning record instead. Number keys reach the first ten; the arrow keys, the gallery and auto-cycle reach them all.
 
 <table>
 <tr><td><img src="docs/screenshots/bars.png" alt="Spectrum"></td><td><img src="docs/screenshots/scope.png" alt="Oscilloscope"></td><td><img src="docs/screenshots/trails.png" alt="Feedback Trails"></td></tr>
 <tr><td><img src="docs/screenshots/tunnel.png" alt="Tunnel"></td><td><img src="docs/screenshots/kaleido.png" alt="Kaleidoscope"></td><td><img src="docs/screenshots/milkdrop.png" alt="MilkDrop"></td></tr>
 <tr><td><img src="docs/screenshots/particles.png" alt="Particle Field"></td><td><img src="docs/screenshots/orb.png" alt="Pulse Orb"></td><td><img src="docs/screenshots/lattice.png" alt="Lattice Flight"></td></tr>
 <tr><td><img src="docs/screenshots/terrain.png" alt="Frequency Terrain"></td><td><img src="docs/screenshots/fluid.png" alt="Fluid"></td><td><img src="docs/screenshots/radial.png" alt="Album Halo"></td></tr>
+<tr><td><img src="docs/screenshots/spectrogram.png" alt="Spectrogram"></td><td><img src="docs/screenshots/ridgelines.png" alt="Ridgelines"></td><td><img src="docs/screenshots/lasers.png" alt="Laser Show"></td></tr>
+<tr><td><img src="docs/screenshots/petals.png" alt="Petals"></td><td><img src="docs/screenshots/planet.png" alt="Ringed Planet"></td><td><img src="docs/screenshots/cavern.png" alt="Crystal Cavern"></td></tr>
+<tr><td><img src="docs/screenshots/ribbons.png" alt="Ribbons"></td><td><img src="docs/screenshots/racer.png" alt="Neon Racer"></td><td><img src="docs/screenshots/starfighter.png" alt="Starfighter"></td></tr>
+<tr><td><img src="docs/screenshots/vectors.png" alt="Vector Arcade"></td><td><img src="docs/screenshots/reaction.png" alt="Reaction-Diffusion"></td><td><img src="docs/screenshots/life.png" alt="Life"></td></tr>
+<tr><td><img src="docs/screenshots/slime.png" alt="Slime Mold"></td><td></td><td></td></tr>
 </table>
 
 ### Adding a visualizer

@@ -130,7 +130,7 @@ interface Splat {
 export default defineVisualizer({
   id: 'fluid',
   name: 'Fluid',
-  family: 'modern',
+  family: 'simulation',
   order: 100,
   description: 'A live ink-in-water simulation stirred by bass, mid and treble jets, with beat bursts.',
   create(ctx) {

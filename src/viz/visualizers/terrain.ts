@@ -148,7 +148,7 @@ void main() {
 export default defineVisualizer({
   id: 'terrain',
   name: 'Frequency Terrain',
-  family: 'modern',
+  family: '3d',
   order: 90,
   description: 'A 3D landscape built from the spectrum, rolling toward a sun on the horizon.',
   create(ctx) {
