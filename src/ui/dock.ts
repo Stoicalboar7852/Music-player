@@ -58,6 +58,7 @@ export function createDock(app: App) {
   volume.addEventListener('keydown', ignoreArrows);
   const add = iconButton('plus', 'Add music (O)', () => app.openSheet('sources'));
   const queue = iconButton('queue', 'Queue (Q)', () => app.toggleQueue());
+  const libraryBtn = iconButton('library', 'Library: your playlists (B)', () => app.openSheet('library'));
   const gallery = iconButton('grid', 'Visualizers (G)', () => app.openSheet('gallery'));
   const settingsBtn = iconButton('settings', 'Settings (,)', () => app.openSheet('settings'));
   const fullscreen = iconButton('fullscreen', 'Fullscreen (F)', () => app.toggleFullscreen());
@@ -67,6 +68,7 @@ export function createDock(app: App) {
     h('div', { class: 'volume' }, muteBtn, volume),
     add,
     queue,
+    libraryBtn,
     gallery,
     settingsBtn,
     fullscreen,

@@ -36,6 +36,11 @@ export const ICONS = {
   note: stroke('<path d="M9 18V6l10-2v12"/><circle cx="6.500" cy="18" r="2.500"/><circle cx="16.500" cy="16" r="2.500"/>'),
   check: stroke('<path d="m5 12.500 4.500 4.500L19 7.500"/>'),
   stop: fill('<rect x="6.500" y="6.500" width="11" height="11" rx="2"/>'),
+  library: stroke('<path d="M5 4.5v15M9 4.5v15"/><path d="m13.2 5.2 3.6-1 3.4 13.4-3.6 1z"/>'),
+  listPlus: stroke('<path d="M4 6h11M4 11h11M4 16h6"/><path d="M17.500 13v7M14 16.500h7"/>'),
+  download: stroke('<path d="M12 4v11M7.500 10.500 12 15l4.500-4.500"/><path d="M5 19h14"/>'),
+  upload: stroke('<path d="M12 15V4M7.500 8.500 12 4l4.500 4.500"/><path d="M5 19h14"/>'),
+  heart: stroke('<path d="M12 19.500s-7-4.300-7-9.300A3.900 3.900 0 0 1 12 8a3.900 3.900 0 0 1 7 2.200c0 5-7 9.300-7 9.300z"/>'),
   external: stroke('<path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/>'),
   copy: stroke('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),
 } as const;

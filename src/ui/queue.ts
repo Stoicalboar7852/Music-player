@@ -60,6 +60,10 @@ export function createQueue(app: App) {
         'div',
         { class: 'row-end' },
         track.duration ? h('span', { text: formatTime(track.duration) }) : null,
+        iconButton('listPlus', 'Add to a playlist', (e) => {
+          e.stopPropagation();
+          app.addToPlaylist(e.currentTarget as HTMLElement, { tracks: [track], label: `"${track.title}"` });
+        }),
         iconButton('close', 'Remove from queue', (e) => {
           e.stopPropagation();
           player.remove(track.id);

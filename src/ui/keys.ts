@@ -18,6 +18,7 @@ const SHORTCUTS: [keys: string[], what: string][] = [
   [['S'], 'Shuffle'],
   [['R'], 'Repeat: off, all, one'],
   [['Q'], 'Queue'],
+  [['B'], 'Library: your playlists'],
   [['O'], 'Add music'],
   [['C'], 'Capture system or tab audio'],
   [['F'], 'Fullscreen (or double-click the visuals)'],
@@ -141,6 +142,9 @@ export function installShortcuts(app: App, ui: { sheetOpen: () => boolean; queue
         break;
       case 'q':
         app.toggleQueue();
+        break;
+      case 'b':
+        app.openSheet('library');
         break;
       case 'o':
         app.openSheet('sources');

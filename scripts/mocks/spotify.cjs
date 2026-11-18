@@ -122,6 +122,8 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
   let challenge = null;
   let accessCounter = 0;
   const validTokens = new Set();
+  // "Mock Mix": removed and local entries included, as real playlists have. Tests add to it.
+  const pl1Items = [{ item: TRACKS[3] }, { item: null }, { item: { ...TRACKS[4], is_local: true } }, { item: TRACKS[5] }];
   const json = (route, status, body) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
   const preflight = (route) =>
     route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,PUT,POST,DELETE,OPTIONS' } });
@@ -194,7 +196,7 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
       return json(route, 200, page([{ id: 'pl1', name: 'Mock Mix', owner: { display_name: 'Mock Listener' }, images: [] }]));
     }
     // Post-February-2026 shape: /items, and each entry carries the track under "item".
-    if (path === '/playlists/pl1/items') return json(route, 200, page([{ item: TRACKS[3] }, { item: null }, { item: { ...TRACKS[4], is_local: true } }, { item: TRACKS[5] }]));
+    if (path === '/playlists/pl1/items') return json(route, 200, page(pl1Items));
     if (path === '/playlists/pl1/tracks') return json(route, 404, { error: { status: 404, message: 'Not found' } });
     if (path === '/playlists/pl1') return json(route, 200, { id: 'pl1', name: 'Mock Mix', owner: { display_name: 'Mock Listener' } });
     if (path === '/albums/album1/tracks') return json(route, 200, page(TRACKS.slice(6, 9).map(({ album, ...t }) => t)));
@@ -216,7 +218,16 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
     return json(route, 404, { error: { status: 404, message: `mock has no ${path}` } });
   });
 
-  return { log, expireTokens: () => validTokens.clear() };
+  return {
+    log,
+    expireTokens: () => validTokens.clear(),
+    /** Adds a song to "Mock Mix" on the simulated Spotify side, as if the user did it in Spotify. */
+    addToMockMix: (index) => {
+      const entry = { item: TRACKS[index] };
+      pl1Items.push(entry);
+      return () => pl1Items.splice(pl1Items.indexOf(entry), 1);
+    },
+  };
 }
 
 module.exports = { installSpotifyMock, SPOTIFY_TRACKS: TRACKS, SPOTIFY_SHORT: SHORT };

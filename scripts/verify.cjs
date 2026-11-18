@@ -14,6 +14,8 @@
 //                bass, mids, treble and beats separately
 //   player       drives the real UI: files, tags, queue, transport, shortcuts,
 //                auto-cycle, idle fade, drag and drop, error handling
+//   playlists    Phosphor playlists: mixed sources, nesting, loops refused,
+//                play modes, local files reopened after a reload, export/import
 //   capture      real getDisplayMedia capture of another tab and of this tab
 //   spotify      the Spotify integration against a local simulation of
 //                Spotify (see scripts/mocks): sign-in, search, playback, queue
@@ -35,7 +37,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'visualizers,reaction,player,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'visualizers,reaction,player,playlists,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -503,6 +505,187 @@ async function player(browser) {
   await context.close();
 }
 
+// ------------------------------------------------------------------ playlists
+
+async function playlists(browser) {
+  console.log('\n== Phosphor playlists ==');
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  const context = await browser.newContext({ viewport: { width: 1440, height: 810 }, deviceScaleFactor: 2, acceptDownloads: true });
+  await installYouTubeMock(context);
+  // This test browser crashes when a file handle is read back from IndexedDB
+  // (real Chrome doesn't). Phosphor lets tests swap its handle store, so here
+  // handles are found again by name in the browser's private file system,
+  // which survives the reload below just the same.
+  await context.addInitScript(() => {
+    const load = () => JSON.parse(localStorage.getItem('test.handles') || '{}');
+    window.__phosphorHandleStore = {
+      async put(record) {
+        const map = load();
+        map[record.key] = { name: record.handle.name, fileName: record.name, size: record.size };
+        localStorage.setItem('test.handles', JSON.stringify(map));
+      },
+      async get(key) {
+        const entry = load()[key];
+        if (!entry) return undefined;
+        const root = await navigator.storage.getDirectory();
+        return { key, handle: await root.getFileHandle(entry.name), name: entry.fileName, size: entry.size };
+      },
+    };
+  });
+  const page = await open(context);
+  page.on('dialog', (d) => void d.accept());
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low', autoShare: false });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+  const lib = (fn, arg) =>
+    page.evaluate(([fn, arg]) => new Function('lib', 'app', 'arg', `return (${fn})(lib, app, arg)`)(window.__phosphor.app.library, window.__phosphor.app, arg), [fn.toString(), arg]);
+
+  // Three files opened the plain way (no handle), two stored in the browser's
+  // private file system, which gives real reopenable handles like Chrome's pickers do.
+  await page.setInputFiles('#file-input', ['mp3', 'flac', 'wav'].map((e) => path.join(AUDIO, `signal-check.${e}`)));
+  await page.waitForFunction(() => window.__phosphor.player.queue.length === 3);
+  await page.evaluate(async () => {
+    const root = await navigator.storage.getDirectory();
+    const put = async (name, url) => {
+      const handle = await root.getFileHandle(name, { create: true });
+      const writable = await handle.createWritable();
+      await writable.write(await (await fetch(url)).blob());
+      await writable.close();
+      return handle;
+    };
+    const handles = [await put('opfs-one.mp3', '/.verify/audio/signal-check-short.mp3'), await put('opfs-two.ogg', '/.verify/audio/signal-check.ogg')];
+    window.__opfsHandles = handles;
+    const files = await Promise.all(handles.map(async (handle) => ({ file: await handle.getFile(), path: handle.name, handle })));
+    window.__phosphor.app.addFiles(files, { play: false });
+  });
+  await page.waitForFunction(() => window.__phosphor.player.queue.length === 5);
+
+  // ---- make a playlist through the Library sheet
+  await page.keyboard.press('b');
+  await page.waitForTimeout(400);
+  check('B opens the Library', await page.isVisible('.sheet[aria-label="Library"]'));
+  await page.click('.library-nav .library-new');
+  await page.waitForFunction(() => document.querySelector('.playlist-name')?.value.startsWith('New playlist'));
+  await page.fill('.playlist-name', 'Everything');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(200);
+  await page.click('.tab-panel button:has-text("Whole queue")');
+  await page.waitForFunction(() => document.querySelectorAll('.library-items .row').length >= 5, null, { timeout: 8000 }).catch(() => {});
+  const rows = await page.locator('.library-items .row').count();
+  check('a new playlist takes the whole queue', rows === 5, `${rows} items`);
+  const missing = await page.locator('.library-items .row-sub', { hasText: 'needs adding again' }).count();
+  check("files that can't be reopened later are flagged (no handle from the browser)", missing === 3, `${missing} flagged`);
+
+  // ---- nesting, and loops refused
+  await page.click('.library-nav .library-new');
+  await page.waitForFunction(() => document.querySelector('.playlist-name')?.value.startsWith('New playlist'));
+  await page.fill('.playlist-name', 'Outer');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(200);
+  await page.click('.tab-panel button:has-text("Add playlist inside")');
+  await page.waitForTimeout(400);
+  check('a playlist can contain another playlist', await page.isVisible('.library-items .row-title >> text=Everything'));
+  const loop = await lib(async (lib) => {
+    const everything = lib.playlists.find((p) => p.name === 'Everything');
+    const outer = lib.playlists.find((p) => p.name === 'Outer');
+    try {
+      await lib.addPlaylist(everything.id, outer.id);
+      return 'allowed';
+    } catch (e) {
+      return e.message;
+    }
+  });
+  check('putting a playlist inside one it already contains is refused', /would loop/.test(loop), loop);
+  await page.click('.library-nav .playlist-tab >> text=Everything');
+  await page.waitForTimeout(200);
+  const nestOptions = await page.locator('.tab-panel select.compact option').count();
+  check('...and the Library only offers playlists that would not loop', nestOptions === 0, `${nestOptions} offered`);
+
+  // ---- play modes
+  const order = await lib(async (lib, app) => {
+    const p = await lib.create('Mixed');
+    const local = app.player.queue.filter((t) => t.handle);
+    await lib.addTracks(p.id, [local[0], local[1], { id: 'y1', source: 'youtube', ref: 'aaaaaaaaaaa', title: 'Clip A' }, { id: 'y2', source: 'youtube', ref: 'bbbbbbbbbbb', title: 'Clip B' }]);
+    await lib.setMode(p.id, 'interleave');
+    const alternate = (await lib.resolve(p.id, app.services)).tracks.map((t) => t.source[0]).join('');
+    await lib.setMode(p.id, 'shuffle');
+    const shuffled = (await lib.resolve(p.id, app.services)).tracks.length;
+    return { alternate, shuffled };
+  });
+  check('"Alternate sources" takes turns between sources', order.alternate === 'lyly', order.alternate);
+  check('"Shuffled" keeps every song', order.shuffled === 4);
+  await page.click('.library-nav .playlist-tab >> text=Everything');
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(SHOTS, 'ui-library.png') });
+
+  // ---- after a reload: still there, and local files reopen
+  await page.keyboard.press('Escape');
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor);
+  await page.evaluate(() => window.__phosphor.renderer.setVisualizer('bars', { immediate: true }));
+  await page.waitForTimeout(800);
+  const names = await lib((lib) => lib.playlists.map((p) => `${p.name}:${p.items.length}`).join(','));
+  check('playlists survive a reload', names === 'Everything:5,Outer:1,Mixed:4', names);
+  check('saved playlists appear on the first screen', await page.isVisible('.playlist-chips >> text=Everything'));
+  await page.keyboard.press('b');
+  await page.click('.library-nav .playlist-tab >> text=Outer');
+  await page.click('.tab-panel .actions button:has-text("Play")');
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.4, null, { timeout: 10000 }).catch(() => {});
+  const s = await state(page);
+  const queueNames = await page.evaluate(() => window.__phosphor.player.queue.map((t) => t.file?.name).join(','));
+  check('playing a playlist expands the playlists inside it and reopens local files after a reload', s.playing && queueNames === 'opfs-one.mp3,opfs-two.ogg', queueNames);
+  const skipped = await page.locator('.toast.error', { hasText: 'needs adding again' }).count();
+  check("files Phosphor can't reopen are explained, not silently dropped", skipped >= 1, `${skipped} notes`);
+
+  // ---- add from the queue's playlist button
+  await page.keyboard.press('q');
+  await page.waitForTimeout(300);
+  await page.hover('.drawer .row >> nth=0');
+  await page.click('.drawer .row >> nth=0 >> [title="Add to a playlist"]');
+  await page.waitForSelector('.menu');
+  await page.click('.menu-item >> text=Mixed');
+  await page.waitForTimeout(400);
+  check("the playlist button on a queue row adds the song", (await lib((lib) => lib.playlists.find((p) => p.name === 'Mixed').items.length)) === 5);
+  await page.keyboard.press('q');
+
+  // ---- export, import, and reconnecting files by name and size
+  await page.keyboard.press('b');
+  await page.click('.library-nav .playlist-tab >> text=Everything');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('.library-foot button:has-text("Export") >> nth=0')]);
+  const exported = fs.readFileSync(await download.path(), 'utf8');
+  const data = JSON.parse(exported);
+  check('a playlist exports as a portable JSON file', data.format === 'phosphor-playlists' && data.playlists[0].items.length === 5 && !exported.includes('"handleKey": "'), `${data.playlists?.[0]?.items?.length} items`);
+  const exportPath = path.resolve('.verify/everything.phosphor.json');
+  fs.writeFileSync(exportPath, exported);
+  await page.setInputFiles('.library input[type=file]', exportPath);
+  await page.waitForTimeout(800);
+  const imported = await lib((lib) => lib.playlists.map((p) => p.name).join(','));
+  check('importing it creates a copy alongside', imported.includes('Everything (2)'), imported);
+  const relinked = await lib(async (lib, app) => {
+    const copy = lib.playlists.find((p) => p.name === 'Everything (2)');
+    const before = (await lib.resolve(copy.id, app.services)).tracks.length;
+    const root = await navigator.storage.getDirectory();
+    const opfs = [await root.getFileHandle('opfs-one.mp3'), await root.getFileHandle('opfs-two.ogg')];
+    const files = await Promise.all(opfs.map(async (handle) => ({ file: await handle.getFile(), path: handle.name, handle })));
+    app.addFiles(files, { play: false });
+    await new Promise((r) => setTimeout(r, 800));
+    const after = (await lib.resolve(copy.id, app.services)).tracks.length;
+    return { before, after };
+  });
+  check('opening the same files again reconnects an imported playlist', relinked.before === 0 && relinked.after === 2, JSON.stringify(relinked));
+
+  // ---- delete
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('b');
+  await page.click('.library-nav .playlist-tab >> text=Mixed');
+  await page.click('.library-foot button:has-text("Delete")');
+  await page.waitForTimeout(500);
+  const left = await lib((lib) => lib.playlists.map((p) => p.name).join(','));
+  check('a playlist can be deleted', !left.split(',').includes('Mixed'), left);
+  await context.close();
+}
+
 // -------------------------------------------------------------------- capture
 
 async function capture() {
@@ -642,6 +825,26 @@ async function spotify() {
   check('result rows show cover art from the service', (await page.locator('.results .thumb img').count()) >= 10);
   check('the tab shows a connected indicator', await page.isVisible('.tab[data-id="spotify"] .status-dot.on'));
   await page.screenshot({ path: path.join(SHOTS, 'ui-spotify.png') });
+
+  // ---- a Phosphor playlist linked to a Spotify playlist stays up to date
+  await page.hover('.results .row:has-text("Mock Mix")');
+  await page.click('.results .row:has-text("Mock Mix") [title^="Link to a Phosphor playlist"]');
+  await page.waitForSelector('.menu');
+  await page.click('.menu-item.new');
+  await page.waitForTimeout(600);
+  const linked = () =>
+    page.evaluate(async () => {
+      const { library, services } = window.__phosphor.app;
+      const p = library.playlists.find((x) => x.items.some((i) => i.kind === 'remote'));
+      const { tracks, notes } = await library.resolve(p.id, services);
+      return { titles: tracks.map((t) => t.title), notes };
+    });
+  const before = await linked();
+  const undoAdd = mock.addToMockMix(7);
+  const after = await linked();
+  undoAdd();
+  check('a linked Spotify playlist plays its current songs', before.titles.join() === 'Mock Song 4,Mock Song 6', before.titles.join());
+  check('...and a song added to it on Spotify shows up the next time it plays', after.titles.join() === 'Mock Song 4,Mock Song 6,Mock Song 8', after.titles.join());
 
   // ---- play
   await page.click('.results .row:nth-child(2) [title="Play now"]');
@@ -795,6 +998,12 @@ async function spotify() {
   check('the session is restored after a reload without signing in again', (await svc()).connected && mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length === 1);
   await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').disconnect());
   check('disconnect forgets the tokens', !(await svc()).connected && (await page.evaluate(() => localStorage.getItem('phosphor.spotify.tokens'))) === null);
+  const offline = await page.evaluate(async () => {
+    const { library, services } = window.__phosphor.app;
+    const p = library.playlists.find((x) => x.items.some((i) => i.kind === 'remote'));
+    return (await library.resolve(p.id, services)).notes.join(' ');
+  });
+  check('while Spotify is disconnected, a linked playlist explains what is missing', /Connect Spotify to include "Mock Mix"/.test(offline), offline);
   await context.close();
 
   // ---- a free account
@@ -1154,6 +1363,7 @@ async function youtube() {
     if (only.includes('visualizers')) await visualizers(browser);
     if (only.includes('reaction')) await reaction(browser);
     if (only.includes('player')) await player(browser);
+    if (only.includes('playlists')) await playlists(browser);
   } finally {
     await browser.close();
   }

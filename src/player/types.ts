@@ -19,6 +19,8 @@ export interface Track {
   artworkUrl?: string;
   /** Local tracks: the file itself. */
   file?: File;
+  /** Local tracks: the browser's handle to the file, when it gave one. Lets playlists reopen it later. */
+  handle?: FileSystemFileHandle;
   /** Streaming tracks: the service's own identifier (Spotify URI, Apple song id, YouTube video id). */
   ref?: string;
 }

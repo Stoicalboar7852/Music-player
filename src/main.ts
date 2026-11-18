@@ -7,7 +7,8 @@ import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { createHarness } from './debug/harness';
-import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pickFolder, tracksFromFiles, type IncomingFile } from './player/local';
+import { PlaylistLibrary } from './library/playlists';
+import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pickFiles, pickFolder, tracksFromFiles, type IncomingFile } from './player/local';
 import { connectMediaSession } from './player/mediaSession';
 import { Player } from './player/player';
 import { SOURCE_NAMES, type Track } from './player/types';
@@ -16,9 +17,11 @@ import { handleSpotifyCallback, SpotifyService } from './services/spotify';
 import { YouTubeService } from './services/youtube';
 import type { MusicService } from './services/types';
 import { createDock } from './ui/dock';
-import { h } from './ui/dom';
+import { clear, h, icon } from './ui/dom';
 import { openGallery } from './ui/gallery';
 import { installShortcuts, openShortcuts } from './ui/keys';
+import { openLibrary } from './ui/library';
+import { openPlaylistMenu } from './ui/playlistMenu';
 import { createQueue } from './ui/queue';
 import { openSettings } from './ui/settingsSheet';
 import { createSheets } from './ui/sheets';
@@ -59,6 +62,7 @@ try {
 }
 
 const player = new Player();
+const library = new PlaylistLibrary();
 const capture = new CaptureManager(engine);
 player.register(new LocalBackend(engine));
 // Streaming services. Each brings its own official player as a backend; none
@@ -89,6 +93,7 @@ const app: App = {
   player,
   capture,
   services,
+  library,
 
   toast: (message, kind) => toasts.show(message, kind),
 
@@ -103,6 +108,9 @@ const app: App = {
     } else if (name === 'sources') {
       const s = openSources(app, section);
       sheets.open(name, s.body, { title: 'Add music', split: true, onClose: s.onClose });
+    } else if (name === 'library') {
+      const l = openLibrary(app, section);
+      sheets.open(name, l.body, { title: 'Library', split: true, onClose: l.onClose });
     } else if (name === 'settings') {
       sheets.open(name, openSettings(app, section).body, { title: 'Settings', narrow: true });
     } else {
@@ -124,9 +132,15 @@ const app: App = {
     player.add(tracks, { play: opts.play ?? !player.playing });
     toasts.show(tracks.length === 1 ? `Added "${tracks[0].title}"` : `Added ${tracks.length} tracks`);
     loadTagsInBackground(tracks, folderCovers, (id, patch) => player.patch(id, patch));
+    // Saved playlists that lost track of these files (imported, or opened without a handle) get them back.
+    void library.relink(tracks).then((n) => n > 0 && toasts.show(`Reconnected ${n} file${n === 1 ? '' : 's'} in your playlists`));
     sheets.close();
   },
-  openFilePicker: () => fileInput.click(),
+  async openFilePicker() {
+    const files = await pickFiles();
+    if (files === null) fileInput.click();
+    else if (files.length > 0) app.addFiles(files);
+  },
   async openFolderPicker() {
     const files = await pickFolder();
     if (files === null) folderInput.click();
@@ -161,6 +175,30 @@ const app: App = {
     if (!renderer.setVisualizer(id)) toasts.show("That visualizer couldn't start on this graphics hardware.", 'error');
   },
   stepVisualizer: (direction) => renderer.step(direction),
+  async playPlaylist(id: string, opts = {}) {
+    const playlist = library.get(id);
+    if (!playlist) return;
+    const { tracks, notes } = await library.resolve(id, services);
+    for (const note of notes.slice(0, 3)) toasts.show(note, 'error');
+    if (notes.length > 3) toasts.show(`…and ${notes.length - 3} more items were skipped.`, 'error');
+    if (tracks.length === 0) {
+      toasts.show(`"${playlist.name}" has nothing playable right now.`, 'error');
+      return;
+    }
+    if (!opts.append) player.clear();
+    player.add(tracks, { play: !opts.append || !player.playing });
+    toasts.show(opts.append ? `Queued "${playlist.name}" (${tracks.length})` : `Playing "${playlist.name}"`);
+    // Reopened local files get their tags and cover art back.
+    const local = tracks.filter((t) => t.source === 'local' && !t.artworkUrl);
+    if (local.length) loadTagsInBackground(local, new Map(), (tid, patch) => player.patch(tid, patch));
+    sheets.close();
+  },
+  addToPlaylist(anchor, what) {
+    openPlaylistMenu(app, anchor, what.label, async (playlistId) => {
+      if (what.tracks?.length) await library.addTracks(playlistId, what.tracks);
+      if (what.collection) await library.addCollection(playlistId, what.collection);
+    });
+  },
   setAutoCycle(on: boolean) {
     settings.set({ autoCycle: on });
     toasts.show(on ? `Auto-cycle on: a new visualizer every ${settings.get('cycleSeconds')} seconds` : 'Auto-cycle off');
@@ -173,6 +211,21 @@ const queue = createQueue(app);
 
 // Shown instead of a silent black screen when there is nothing to visualize yet.
 const welcome = createWelcome(app);
+// Saved playlists appear on the first screen, one click from playing.
+const renderWelcomePlaylists = () => {
+  clear(welcome.extra);
+  if (library.playlists.length === 0) return;
+  welcome.extra.append(
+    h('div', { class: 'welcome-label', text: 'Your playlists' }),
+    h(
+      'div',
+      { class: 'playlist-chips' },
+      library.playlists.slice(0, 6).map((p) => h('button', { class: 'btn small', type: 'button', onClick: () => void app.playPlaylist(p.id) }, icon('play', 14), p.name)),
+      h('button', { class: 'btn small', type: 'button', onClick: () => app.openSheet('library') }, icon('library', 14), 'Library'),
+    ),
+  );
+};
+library.on('change', renderWelcomePlaylists);
 
 // Streaming services are DRM-protected: their audio only reaches the
 // visualizers once the user shares this tab's sound.
@@ -410,6 +463,7 @@ if (!renderer.setVisualizer(settings.get('visualizer'), { immediate: true })) re
 renderer.start();
 route();
 topbar.render();
+renderWelcomePlaylists();
 
 window.setInterval(() => dock.tick(), 200);
 window.setInterval(() => topbar.tick(), 50);

@@ -36,6 +36,7 @@ export function createServicePanel(app: App, service: MusicService): HTMLElement
         track.duration ? h('span', { text: formatTime(track.duration) }) : null,
         iconButton('play', 'Play now', () => enqueue([track], true), 'keep'),
         iconButton('plus', 'Add to queue', () => enqueue([track], false), 'keep'),
+        iconButton('listPlus', 'Add to a Phosphor playlist', (e) => app.addToPlaylist(e.currentTarget as HTMLElement, { tracks: [track], label: `"${track.title}"` }), 'keep'),
       ),
     );
 
@@ -59,6 +60,8 @@ export function createServicePanel(app: App, service: MusicService): HTMLElement
         { class: 'row-end' },
         iconButton('play', 'Play all', () => void load(true), 'keep'),
         iconButton('plus', 'Add all to queue', () => void load(false), 'keep'),
+        iconButton('listPlus', 'Link to a Phosphor playlist (stays up to date)', (e) =>
+          app.addToPlaylist(e.currentTarget as HTMLElement, { collection, label: `"${collection.title}" (linked, always up to date)` }), 'keep'),
       ),
     );
   };

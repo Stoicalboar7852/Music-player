@@ -2,12 +2,14 @@
 
 import type { CaptureManager } from '../audio/capture';
 import type { AudioEngine } from '../audio/engine';
+import type { PlaylistLibrary } from '../library/playlists';
 import type { IncomingFile } from '../player/local';
 import type { Player } from '../player/player';
+import type { Collection, Track } from '../player/types';
 import type { MusicService } from '../services/types';
 import type { Renderer } from '../viz/renderer';
 
-export type SheetName = 'sources' | 'gallery' | 'settings' | 'shortcuts';
+export type SheetName = 'sources' | 'gallery' | 'settings' | 'shortcuts' | 'library';
 
 export interface App {
   engine: AudioEngine;
@@ -15,6 +17,7 @@ export interface App {
   player: Player;
   capture: CaptureManager;
   services: MusicService[];
+  library: PlaylistLibrary;
 
   toast(message: string, kind?: 'info' | 'error'): void;
   /** Opens a sheet, optionally on a specific tab/section. */
@@ -32,4 +35,8 @@ export interface App {
   setVisualizer(id: string): void;
   stepVisualizer(direction: 1 | -1): void;
   setAutoCycle(on: boolean): void;
+  /** Plays (or, with append, queues) a Phosphor playlist. Call from a click: local files may need permission again. */
+  playPlaylist(id: string, opts?: { append?: boolean }): Promise<void>;
+  /** Opens the "add to which playlist?" menu next to `anchor`. */
+  addToPlaylist(anchor: HTMLElement, what: { tracks?: Track[]; collection?: Collection; label: string }): void;
 }

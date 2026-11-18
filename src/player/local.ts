@@ -94,6 +94,8 @@ export interface IncomingFile {
   file: File;
   /** Path within whatever was picked or dropped, used for ordering and cover lookup. */
   path: string;
+  /** Present when the browser gave a reopenable handle (Chrome's file and folder pickers, drag and drop). */
+  handle?: FileSystemFileHandle;
 }
 
 function titleFromName(name: string): string {
@@ -120,11 +122,12 @@ export function tracksFromFiles(incoming: IncomingFile[]): { tracks: Track[]; fo
   const tracks = incoming
     .filter(({ file }) => isAudioFile(file))
     .sort((a, b) => naturalOrder.compare(a.path, b.path))
-    .map(({ file, path }): Track & { dir: string } => ({
+    .map(({ file, path, handle }): Track & { dir: string } => ({
       id: newTrackId('local'),
       source: 'local',
       title: titleFromName(file.name),
       file,
+      handle,
       dir: dirOf(path),
     }));
   return { tracks, folderCovers };
@@ -155,14 +158,40 @@ async function walkEntry(entry: FsEntry, out: IncomingFile[]) {
   }
 }
 
+type DirectoryEntryHandle = FileSystemDirectoryHandle & { values(): AsyncIterable<FileSystemHandle> };
+
+/** Walks a directory handle, collecting files with their handles. */
+async function walkHandle(dir: DirectoryEntryHandle, prefix: string, out: IncomingFile[]) {
+  for await (const handle of dir.values()) {
+    const path = `${prefix}${handle.name}`;
+    if (handle.kind === 'file') {
+      const fileHandle = handle as FileSystemFileHandle;
+      out.push({ file: await fileHandle.getFile(), path, handle: fileHandle });
+    } else {
+      await walkHandle(handle as DirectoryEntryHandle, `${path}/`, out);
+    }
+  }
+}
+
 /** Collects every file in a drop, descending into dropped folders. */
 export async function filesFromDrop(data: DataTransfer): Promise<IncomingFile[]> {
   const out: IncomingFile[] = [];
+  const items = Array.from(data.items).filter((item) => item.kind === 'file');
+  type HandleItem = DataTransferItem & { getAsFileSystemHandle?: () => Promise<FileSystemHandle | null> };
+  // Everything must be requested synchronously, before the first await.
+  if (items.length > 0 && typeof (items[0] as HandleItem).getAsFileSystemHandle === 'function') {
+    const pending = items.map((item) => ({ handle: (item as HandleItem).getAsFileSystemHandle!(), file: item.getAsFile() }));
+    for (const { handle, file } of pending) {
+      const h = await handle.catch(() => null);
+      if (h?.kind === 'file') out.push({ file: await (h as FileSystemFileHandle).getFile(), path: h.name, handle: h as FileSystemFileHandle });
+      else if (h?.kind === 'directory') await walkHandle(h as DirectoryEntryHandle, `${h.name}/`, out);
+      else if (file) out.push({ file, path: file.name });
+    }
+    return out;
+  }
   const entries: FsEntry[] = [];
   const loose: File[] = [];
-  // Entries must be grabbed synchronously, before the first await.
-  for (const item of Array.from(data.items)) {
-    if (item.kind !== 'file') continue;
+  for (const item of items) {
     const entry = item.webkitGetAsEntry?.() as unknown as FsEntry | null | undefined;
     if (entry) entries.push(entry);
     else {
@@ -175,39 +204,45 @@ export async function filesFromDrop(data: DataTransfer): Promise<IncomingFile[]>
   return out;
 }
 
+const AUDIO_ACCEPT = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.weba', '.webm', '.mp4'];
+
+/**
+ * Opens the file picker. Uses the File System Access API where available, so
+ * playlists can reopen the files later; returns null when it isn't, so the
+ * caller can fall back to an <input type=file>.
+ */
+export async function pickFiles(): Promise<IncomingFile[] | null> {
+  const picker = (window as unknown as { showOpenFilePicker?: (opts?: object) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker;
+  if (!picker) return null;
+  let handles: FileSystemFileHandle[];
+  try {
+    handles = await picker({ id: 'phosphor-music', multiple: true, types: [{ description: 'Audio files', accept: { 'audio/*': AUDIO_ACCEPT } }] });
+  } catch {
+    return []; // dismissed
+  }
+  return Promise.all(handles.map(async (handle) => ({ file: await handle.getFile(), path: handle.name, handle })));
+}
+
 export function filesFromInput(input: HTMLInputElement): IncomingFile[] {
   return Array.from(input.files ?? []).map((file) => ({ file, path: file.webkitRelativePath || file.name }));
 }
 
-interface DirectoryHandle {
-  name: string;
-  values(): AsyncIterable<DirectoryHandle & { kind: 'file' | 'directory'; getFile(): Promise<File> }>;
-}
-
 /**
- * Opens the folder picker. Uses the File System Access API where available
- * and returns null when it isn't, so the caller can fall back to an
+ * Opens the folder picker. Uses the File System Access API where available and
+ * returns null when it isn't, so the caller can fall back to an
  * <input webkitdirectory>.
  */
 export async function pickFolder(): Promise<IncomingFile[] | null> {
-  const picker = (window as unknown as { showDirectoryPicker?: (opts?: object) => Promise<DirectoryHandle> })
-    .showDirectoryPicker;
+  const picker = (window as unknown as { showDirectoryPicker?: (opts?: object) => Promise<DirectoryEntryHandle> }).showDirectoryPicker;
   if (!picker) return null;
-  let root: DirectoryHandle;
+  let root: DirectoryEntryHandle;
   try {
     root = await picker({ id: 'phosphor-music', mode: 'read' });
   } catch {
     return []; // dismissed
   }
   const out: IncomingFile[] = [];
-  const walk = async (dir: DirectoryHandle, prefix: string) => {
-    for await (const handle of dir.values()) {
-      const path = `${prefix}${handle.name}`;
-      if (handle.kind === 'file') out.push({ file: await handle.getFile(), path });
-      else await walk(handle, `${path}/`);
-    }
-  };
-  await walk(root, `${root.name}/`);
+  await walkHandle(root, `${root.name}/`, out);
   return out;
 }
 
