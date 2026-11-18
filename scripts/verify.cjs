@@ -19,6 +19,9 @@
 //   transitions  between songs: an equal-power crossfade, beat-matched mixes
 //                (tempo, beat lock, bass swap, filter rise), local into
 //                YouTube, and two YouTube songs in a row
+//   pwa          builds the app and serves it (vite preview): manifest and
+//                icons, the service worker, installability, offline use, the
+//                animated tab icon, and a phone (microphone instead of capture)
 //   capture      real getDisplayMedia capture of another tab and of this tab
 //   spotify      the Spotify integration against a local simulation of
 //                Spotify (see scripts/mocks): sign-in, search, playback, queue
@@ -40,7 +43,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,pwa,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -1739,6 +1742,172 @@ async function transitions(browser) {
   await context.close();
 }
 
+// ------------------------------------------------------------------------ pwa
+
+/** Waits until an HTTP server answers. */
+async function waitForServer(url, ms = 30000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return true;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
+async function pwa() {
+  console.log('\n== Installable app: a production build, served locally ==');
+  // The service worker is only registered in production builds, so this part
+  // builds the app and serves it with `vite preview`.
+  const dist = path.resolve('.verify/dist');
+  const vite = path.resolve('node_modules/vite/bin/vite.js');
+  execFileSync(process.execPath, [vite, 'build', '--outDir', dist, '--emptyOutDir', '--logLevel', 'error']);
+  const { spawn } = require('node:child_process');
+  const server = spawn(process.execPath, [vite, 'preview', '--outDir', dist, '--port', '4174', '--strictPort', '--host', '127.0.0.1'], { stdio: 'ignore' });
+  const base = 'http://127.0.0.1:4174/';
+  // A real (not incognito) profile: Chrome never offers to install from an incognito window.
+  const profile = path.resolve('.verify/pwa-profile');
+  fs.rmSync(profile, { recursive: true, force: true });
+  let browser = null;
+  try {
+    check('the production build is served', await waitForServer(base));
+    const context = await chromium.launchPersistentContext(profile, { headless: false, args: GL_ARGS, viewport: { width: 1280, height: 720 } });
+    await context.route('**/.verify/audio/**', (route) => route.fulfill({ path: path.join(AUDIO, path.basename(new URL(route.request().url()).pathname)) }));
+    const page = context.pages()[0] ?? (await context.newPage());
+    watch(page, 'pwa');
+    await page.goto(base);
+    await page.waitForFunction(() => window.__phosphor);
+
+    const manifest = await page.evaluate(async () => {
+      const link = document.querySelector('link[rel="manifest"]');
+      const res = await fetch(link.href);
+      const json = await res.json();
+      const icons = await Promise.all(
+        json.icons.map(async (icon) => {
+          const r = await fetch(new URL(icon.src, link.href));
+          const blob = await r.blob();
+          let size = null;
+          if (blob.type === 'image/png') {
+            const bitmap = await createImageBitmap(blob);
+            size = `${bitmap.width}x${bitmap.height}`;
+          }
+          return { ...icon, ok: r.ok, type: blob.type, size };
+        }),
+      );
+      return { ...json, icons };
+    });
+    const pngs = manifest.icons.filter((i) => i.type === 'image/png');
+    check(
+      'a web app manifest: name, standalone window, 192 and 512 px icons (one maskable), all loading at their stated sizes',
+      manifest.name === 'Phosphor' &&
+        manifest.display === 'standalone' &&
+        manifest.icons.every((i) => i.ok) &&
+        pngs.every((i) => i.size === i.sizes) &&
+        ['192x192', '512x512'].every((s) => pngs.some((i) => i.sizes === s)) &&
+        pngs.some((i) => i.purpose === 'maskable'),
+      manifest.icons.map((i) => `${i.src} ${i.size ?? i.type}`).join(', '),
+    );
+    const controlled = await page
+      .waitForFunction(() => Boolean(navigator.serviceWorker?.controller), null, { timeout: 15000 })
+      .then(() => true, () => false);
+    check('a service worker installs and takes charge of the page', controlled);
+    const cdp = await context.newCDPSession(page);
+    const { installabilityErrors } = await cdp.send('Page.getInstallabilityErrors');
+    check("Chrome counts it as installable (no installability errors)", installabilityErrors.length === 0, installabilityErrors.map((e) => e.errorId).join(', ') || 'none');
+    // Settings > App offers the install (or explains how).
+    await page.keyboard.press(',');
+    const appText = await page.locator('h3[data-section="app"] + div').innerText();
+    check('Settings has an App section about installing it', /Install|install/.test(appText), appText.slice(0, 80));
+    await page.keyboard.press('Escape');
+
+    // The tab's icon comes alive while music plays.
+    await page.setInputFiles('#file-input', TRACK);
+    await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 1, null, { timeout: 15000 });
+    await page.waitForTimeout(600);
+    const playingIcon = await page.evaluate(() => document.querySelector('link[rel="icon"]').href);
+    await page.evaluate(() => window.__phosphor.player.pause());
+    await page.waitForTimeout(2500);
+    const restingIcon = await page.evaluate(() => document.querySelector('link[rel="icon"]').href);
+    check('the tab icon animates while music plays and rests when paused', playingIcon.startsWith('data:image/png') && restingIcon.endsWith('favicon.svg'), `${playingIcon.slice(0, 22)}..., then ${restingIcon.split('/').pop()}`);
+
+    // Offline: the app still opens, and the demo plays (it is synthesised on the spot).
+    await context.setOffline(true);
+    await page.reload();
+    const offline = await page.waitForFunction(() => window.__phosphor, null, { timeout: 15000 }).then(() => true, () => false);
+    check('offline, the app still opens from its cache', offline);
+    if (offline) {
+      await page.click('.welcome >> text=Play demo');
+      const demo = await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 20000 }).then(() => true, () => false);
+      check('...and plays the demo track', demo);
+    }
+    await context.setOffline(false);
+    await context.close();
+
+    // A phone: no way to share another app's audio, so the welcome screen offers
+    // the microphone. (Here the fake microphone plays the test track.)
+    const { devices } = require('playwright');
+    browser = await chromium.launch({
+      headless: false,
+      args: [...GL_ARGS, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${path.join(AUDIO, 'signal-check.wav')}`],
+    });
+    const phone = await browser.newContext({ ...devices['iPhone 13'] });
+    await phone.grantPermissions(['microphone']);
+    const { installYouTubeMock } = require('./mocks/youtube.cjs');
+    await installYouTubeMock(phone);
+    const mobile = await phone.newPage();
+    watch(mobile, 'phone');
+    await mobile.goto(base);
+    await mobile.waitForFunction(() => window.__phosphor);
+    await mobile.waitForTimeout(800);
+    await mobile.screenshot({ path: path.join(SHOTS, 'ui-phone.png') });
+    const mic = mobile.locator('.welcome-link', { hasText: 'Listen through the microphone' });
+    check('on a phone, the welcome screen offers to listen through the microphone instead of sharing audio', (await mic.count()) === 1);
+    const layout = await mobile.evaluate(() => {
+      const card = document.querySelector('.welcome').getBoundingClientRect();
+      const dock = document.querySelector('.dock').getBoundingClientRect();
+      const link = [...document.querySelectorAll('.welcome-link')].find((l) => l.textContent.includes('microphone'));
+      link?.scrollIntoView({ block: 'center' });
+      const r = link?.getBoundingClientRect();
+      const hit = r && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { cardBottom: Math.round(card.bottom), dockTop: Math.round(dock.top), reachable: Boolean(link && hit && link.contains(hit)) };
+    });
+    check('...the welcome card stays clear of the player controls, and the microphone option can be reached', layout.cardBottom <= layout.dockTop && layout.reachable, JSON.stringify(layout));
+    if ((await mic.count()) === 1) {
+      await mic.click();
+      const listening = await mobile
+        .waitForFunction(() => window.__phosphor.capture.state.active && window.__phosphor.capture.state.kind === 'input', null, { timeout: 10000 })
+        .then(() => true, () => false);
+      await mobile.waitForTimeout(2500);
+      const level = await mobile.evaluate(() => window.__phosphor.renderer.audio.level);
+      check('...which drives the visuals from the microphone (a fake one here)', listening && level > 0.01, `level ${level.toFixed(3)}`);
+    }
+    // A streaming song on a phone: the banner offers the microphone, not tab sharing.
+    await mobile.evaluate(() => {
+      const { app, capture, player } = window.__phosphor;
+      capture.stop();
+      const yt = app.services.find((s) => s.id === 'youtube');
+      player.add([yt['videoTrack']('shortclip01')], { play: true });
+    });
+    const banner = await mobile
+      .waitForFunction(() => !document.querySelector('.banner').hidden, null, { timeout: 10000 })
+      .then(() => mobile.locator('.banner').innerText(), () => '');
+    check("...a streaming song's banner offers to listen instead of sharing the tab", /Listen/.test(banner) && !/Share this tab/.test(banner), banner.replace(/\s+/g, ' ').slice(0, 110));
+    await mobile.evaluate(() => window.__phosphor.player.pause());
+    await mobile.evaluate(() => window.__phosphor.app.openSheet('settings', 'app'));
+    await mobile.waitForTimeout(400);
+    const hint = await mobile.locator('h3[data-section="app"] + div').innerText();
+    check('...and Settings explains Add to Home Screen, and what a phone can and cannot do', /Add to Home Screen/.test(hint) && /microphone/.test(hint), hint.replace(/\s+/g, ' ').slice(0, 120));
+    await phone.close();
+  } finally {
+    await browser?.close();
+    server.kill();
+  }
+}
+
 // ----------------------------------------------------------------------- main
 
 (async () => {
@@ -1757,6 +1926,7 @@ async function transitions(browser) {
   } finally {
     await browser.close();
   }
+  if (only.includes('pwa')) await pwa();
   if (only.includes('capture')) await capture();
   if (only.includes('spotify')) await spotify();
   if (only.includes('apple')) await apple();

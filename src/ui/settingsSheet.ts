@@ -3,7 +3,8 @@
 import type { App } from '../app/app';
 import { appBaseUrl, settings, type AutoHide } from '../app/settings';
 import type { Quality } from '../viz/renderer';
-import { h, icon } from './dom';
+import { installer } from '../app/install';
+import { clear, h, icon } from './dom';
 import { CYCLE_CHOICES, segmented, select, toggle } from './gallery';
 
 function field(label: string, control: Node, hint?: string | Node): HTMLElement {
@@ -14,6 +15,34 @@ function textInput(key: 'spotifyClientId' | 'youtubeApiKey' | 'googleClientId', 
   const input = h('input', { class: 'input', type: 'text', placeholder, value: settings.get(key), spellcheck: 'false', autocomplete: 'off' });
   input.addEventListener('change', () => settings.set({ [key]: input.value.trim() }));
   return input;
+}
+
+/** Installing Phosphor as an app, where the browser allows it. */
+function appSection(): HTMLElement {
+  const box = h('div');
+  const render = () => {
+    clear(box);
+    if (installer.standalone) {
+      box.append(h('p', { text: 'Phosphor is running as an installed app.' }));
+    } else if (installer.canPrompt) {
+      box.append(
+        h('p', null, 'Install Phosphor to open it from your home screen, dock or start menu, in its own window. It still runs in this browser, so everything here keeps working.'),
+        h('div', { class: 'actions' }, h('button', { class: 'btn primary', type: 'button', onClick: () => void installer.prompt() }, icon('download', 18), 'Install Phosphor')),
+      );
+    } else {
+      box.append(h('p', { text: installer.manualHint ?? "Your browser installs apps from its own menu (in Chrome or Edge: the install icon in the address bar, or Cast, save and share, then Install page as app). On a phone, use the browser's Add to Home screen." }));
+    }
+    box.append(
+      h(
+        'p',
+        { class: 'hint-text' },
+        "On phones and tablets, local files, the demo and the visualizers work fully, and the installed app works offline. A phone browser can't share a tab's or another app's audio with a page, so for streaming songs or anything else the visualizers listen through the microphone. Phone browsers may pause music when the screen locks or you switch apps.",
+      ),
+    );
+  };
+  installer.on('change', render);
+  render();
+  return box;
 }
 
 export function openSettings(app: App, section?: string) {
@@ -185,6 +214,9 @@ export function openSettings(app: App, section?: string) {
         ' as an authorised JavaScript origin (README, YouTube section).',
       ),
     ),
+
+    h('h3', { text: 'App', 'data-section': 'app' }),
+    appSection(),
 
     h('h3', { text: 'About' }),
     h(

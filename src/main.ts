@@ -7,6 +7,8 @@ import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { BeatGrids } from './audio/grids';
+import { registerServiceWorker } from './app/install';
+import { animateFavicon } from './ui/favicon';
 import { planTransition } from './player/transitions';
 import { createHarness } from './debug/harness';
 import { PlaylistLibrary } from './library/playlists';
@@ -233,12 +235,20 @@ library.on('change', renderWelcomePlaylists);
 
 // Streaming services are DRM-protected: their audio only reaches the
 // visualizers once the user shares this tab's sound.
+// Phones and tablets can't share a tab's audio; there the microphone listens instead.
 const bannerText = h('span');
+const listen = () =>
+  void capture.startInput().then(
+    () => app.toast('Listening through the microphone.'),
+    (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
+  );
 const banner = h(
   'div',
   { class: 'banner glass', hidden: true },
   bannerText,
-  h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio"),
+  capture.supported
+    ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
+    : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen'),
 );
 
 const dropzone = h('div', { class: 'dropzone' }, 'Drop to add to the queue');
@@ -293,7 +303,9 @@ function route() {
   if (needsCapture && track) {
     bannerText.replaceChildren(
       h('strong', { text: `${SOURCE_NAMES[track.source]} audio is protected, ` }),
-      'so the visualizers listen to this tab instead. Share its audio to bring them to life.',
+      capture.supported
+        ? 'so the visualizers listen to this tab instead. Share its audio to bring them to life.'
+        : "and this browser can't share a tab's audio, so the visualizers can listen through the microphone instead.",
     );
   }
   welcome.hidden = player.queue.length > 0 || capture.state.active;
@@ -319,6 +331,10 @@ player.on('track', (track) => {
   syncArtwork(track);
   route();
 });
+
+// Installable as an app; the tab icon dances while music plays.
+registerServiceWorker();
+animateFavicon(() => renderer.audio, () => player.playing || capture.state.active);
 
 // A local file gets a beat grid worked out in the background; until it
 // arrives (and for everything else) the beat is tracked live. When songs

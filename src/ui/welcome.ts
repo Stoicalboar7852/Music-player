@@ -3,8 +3,14 @@
 
 import type { App } from '../app/app';
 import { browserLimitation } from '../app/browser';
+import { installer } from '../app/install';
 import type { MusicService } from '../services/types';
 import { clear, h, icon } from './dom';
+
+/** A phone or tablet: a touchscreen and no mouse, so no dragging files in and no keyboard. */
+function touchOnly(): boolean {
+  return matchMedia('(hover: none) and (pointer: coarse)').matches;
+}
 
 function tileStatus(service: MusicService): { text: string; state: 'on' | 'ready' | 'off' } {
   const status = service.status();
@@ -58,23 +64,45 @@ export function createWelcome(app: App) {
     'div',
     { class: 'welcome glass' },
     h('h1', { text: 'Put some music on' }),
-    h('p', { text: 'Drop audio files anywhere on this window, or pick a source. Then press F and sit back.' }),
+    h('p', {
+      text: touchOnly()
+        ? 'Pick some music, or a source. Then sit back.'
+        : 'Drop audio files anywhere on this window, or pick a source. Then press F and sit back.',
+    }),
     h(
       'div',
       { class: 'actions' },
       h('button', { class: 'btn primary', type: 'button', onClick: () => app.openFilePicker() }, icon('file', 18), 'Open files'),
-      h('button', { class: 'btn', type: 'button', onClick: () => void app.openFolderPicker() }, icon('folder', 18), 'Open folder'),
+      // iPhone and iPad can't pick a folder from a web page.
+      installer.ios ? null : h('button', { class: 'btn', type: 'button', onClick: () => void app.openFolderPicker() }, icon('folder', 18), 'Open folder'),
       h('button', { class: 'btn', type: 'button', onClick: () => void app.playDemo() }, icon('sparkles', 18), 'Play demo'),
     ),
     h('div', { class: 'welcome-label', text: 'Streaming' }),
     tiles,
-    h(
-      'button',
-      { class: 'welcome-link', type: 'button', onClick: () => app.openSheet('sources', 'capture') },
-      icon('capture', 18),
-      h('span', null, h('strong', { text: 'Visualize anything playing on this computer' }), h('span', { text: 'Share system or tab audio' })),
-      icon('chevronRight', 18),
-    ),
+    app.capture.supported
+      ? h(
+          'button',
+          { class: 'welcome-link', type: 'button', onClick: () => app.openSheet('sources', 'capture') },
+          icon('capture', 18),
+          h('span', null, h('strong', { text: 'Visualize anything playing on this computer' }), h('span', { text: 'Share system or tab audio' })),
+          icon('chevronRight', 18),
+        )
+      : // Phones and tablets can't share other apps' audio with a page; the microphone can hear it.
+        h(
+          'button',
+          {
+            class: 'welcome-link',
+            type: 'button',
+            onClick: () =>
+              void app.capture.startInput().then(
+                () => app.toast('Listening through the microphone. Play some music nearby.'),
+                (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
+              ),
+          },
+          icon('mic', 18),
+          h('span', null, h('strong', { text: 'Visualize music playing nearby' }), h('span', { text: 'Listen through the microphone' })),
+          icon('chevronRight', 18),
+        ),
     extra,
     browserLimitation() ? h('p', { class: 'note warn', style: 'text-align:left;margin:14px auto 0', text: browserLimitation()! }) : null,
     h('small', null, 'Press ', h('kbd', { text: '?' }), ' for keyboard shortcuts'),
