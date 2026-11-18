@@ -31,9 +31,15 @@ function check(name, ok, detail = '', { required = true } = {}) {
   console.log(`${ok ? '  ok  ' : required ? ' FAIL ' : ' note '} ${name}${detail ? `  (${detail})` : ''}`);
 }
 
-// An unpackaged run passes the app's folder; Linux as root needs --no-sandbox.
+// An unpackaged run passes the app's folder. On Linux (a local run), as root
+// it needs --no-sandbox, and without a GPU, software WebGL.
 const appDir = process.argv[3];
-const args = [...(appDir ? [path.resolve(appDir)] : []), ...(process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : [])];
+const linux = process.platform === 'linux';
+const args = [
+  ...(linux && process.getuid?.() === 0 ? ['--no-sandbox'] : []),
+  ...(linux ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] : []),
+  ...(appDir ? [path.resolve(appDir)] : []),
+];
 const app = await electron.launch({ executablePath: path.resolve(executable), args, timeout: 120_000 });
 try {
   const page = await app.firstWindow();
