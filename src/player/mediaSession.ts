@@ -8,6 +8,11 @@
 // While a streaming source is current, Phosphor therefore plays an inaudible
 // loop in its own page, which makes Chrome use Phosphor's session: the right
 // title, artist and artwork, and media keys that drive Phosphor's queue.
+//
+// When a streaming song is paused, the loop pauses a moment after the
+// service's player: of several paused players Chrome keeps the one paused
+// last, and if that were the service's frame, Now Playing would lose the
+// track info and Play would go to the frame instead of Phosphor.
 
 import { debug } from '../app/debug';
 import type { Player } from './player';
@@ -78,17 +83,27 @@ export function connectMediaSession(player: Player) {
   anchor.setAttribute('aria-hidden', 'true');
   document.body.append(anchor);
 
+  let pauseLater = 0;
   const syncAnchor = () => {
     const track = player.current;
     // Local files play through Phosphor's own <audio> element, which already counts.
-    const wanted = Boolean(track && track.source !== 'local' && (player.playing || player.loading));
+    const streaming = Boolean(track && track.source !== 'local');
+    const wanted = streaming && (player.playing || player.loading);
+    window.clearTimeout(pauseLater);
     if (wanted && anchor.paused) {
       anchor.play().then(
         () => debug('media-session', 'holding Now Playing for Phosphor'),
         (error) => debug('media-session', 'could not start the Now Playing anchor', error),
       );
     } else if (!wanted && !anchor.paused) {
-      anchor.pause();
+      if (!streaming) {
+        anchor.pause();
+        return;
+      }
+      // Paused: after the service's player, so Chrome keeps Phosphor's session.
+      pauseLater = window.setTimeout(() => {
+        if (!player.playing && !player.loading) anchor.pause();
+      }, 1200);
     }
   };
 
