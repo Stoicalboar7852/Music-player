@@ -63,7 +63,7 @@ Streaming services don't let web pages read their audio, so the visualizers reac
 
 Work happens on the [v2](../../tree/v2) branch, in this order:
 
-1. **Fixes:** the next song starts by itself when a Spotify track ends; macOS Now Playing shows the track, artist and artwork properly.
+1. **Fixes** (done): the next song starts by itself when a Spotify song ends; macOS Now Playing shows the track, artist and artwork, and media keys control Phosphor.
 2. **Easier start:** streaming services on the first screen; less manual audio sharing.
 3. **Library:** browsing each service, and Phosphor playlists that mix tracks and whole playlists from Spotify, Apple Music, YouTube and local files, updating live.
 4. **Better music reaction:** beat tracking that follows the drums rather than vocals, with different parts of each visualizer reacting to different parts of the song, plus at least 12 new visualizers.
