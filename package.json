@@ -18,12 +18,15 @@
     "desktop:dist": "npm run desktop:web && npm --prefix desktop run dist"
   },
   "devDependencies": {
+    "jsqr": "^1.4.0",
+    "pngjs": "^7.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.8"
   },
   "dependencies": {
     "butterchurn": "^2.6.7",
     "butterchurn-presets": "^2.4.7",
-    "music-metadata": "^12.5.0"
+    "music-metadata": "^12.5.0",
+    "uqr": "^0.1.3"
   }
 }

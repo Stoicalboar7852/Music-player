@@ -24,6 +24,12 @@ export interface Track {
   /** Streaming tracks: the service's own identifier (Spotify URI, Apple song id, YouTube video id). */
   ref?: string;
   /**
+   * The song's own page on its service, when it isn't the one `ref` points to:
+   * in a list the service plays itself, the song playing now. (The presenter
+   * window's QR code links here; see MusicService.link.)
+   */
+  link?: string;
+  /**
    * Set when the item stands for a whole list the service plays itself: a
    * Spotify-made playlist that apps aren't allowed to list, or an Apple Music
    * station. The track's title, artist and artwork then follow whatever song

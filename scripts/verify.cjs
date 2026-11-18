@@ -19,6 +19,9 @@
 //   transitions  between songs: an equal-power crossfade, beat-matched mixes
 //                (tempo, beat lock, bass swap, filter rise), local into
 //                YouTube, and two YouTube songs in a row
+//   presenter    the presenter window: visuals only, following the main
+//                window, delay under 50 ms, overlays (QR code decoded, title,
+//                logo, blackout, freeze), reconnecting after a reload
 //   desktop      the desktop app's page side (bridge stubbed), its mini player
 //                page, and the Node tests of its server and icons
 //   pwa          builds the app and serves it (vite preview): manifest and
@@ -45,7 +48,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,desktop,pwa,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,presenter,desktop,pwa,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -190,6 +193,271 @@ const state = (page) =>
       idle: document.body.classList.contains('idle'),
     };
   });
+
+// ------------------------------------------------------------------ presenter
+
+/** Mean brightness (0..255) of a PNG screenshot. */
+function brightness(png) {
+  const { PNG } = require('pngjs');
+  const img = PNG.sync.read(png);
+  let sum = 0;
+  for (let i = 0; i < img.data.length; i += 4) sum += (img.data[i] + img.data[i + 1] + img.data[i + 2]) / 3;
+  return sum / (img.data.length / 4);
+}
+
+/** Decodes the QR code in a PNG screenshot, or null. */
+function readQr(png) {
+  const { PNG } = require('pngjs');
+  const jsQR = require('jsqr');
+  const img = PNG.sync.read(png);
+  return jsQR(new Uint8ClampedArray(img.data), img.width, img.height)?.data ?? null;
+}
+
+async function presenter() {
+  console.log('\n== Presenter window ==');
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  const browser = await chromium.launch({ headless: false, args: GL_ARGS });
+  const context = await browser.newContext({ viewport: { width: 960, height: 540 } });
+  await installYouTubeMock(context);
+  const page = await open(context, 'controller');
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low', autoShare: false, crossfadeSeconds: 0.3 });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+  await page.setInputFiles('#file-input', TRACK);
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 20000 });
+
+  // ---- opening
+  const popupPromise = page.waitForEvent('popup', { timeout: 10000 });
+  await page.click('.present-btn');
+  const pres = await popupPromise;
+  watch(pres, 'presenter');
+  // Small, so two windows keep a usable frame rate on software graphics.
+  await pres.setViewportSize({ width: 480, height: 270 });
+  const started = await pres.waitForFunction(() => window.__presenter?.renderer.adopted, null, { timeout: 15000 }).then(() => true, () => false);
+  check('Present (the top-bar button) opens a second window that draws the visuals from the main window\'s audio', started && /\/present\.html$/.test(pres.url()), pres.url());
+  const controls = await pres.evaluate(() => ({
+    interactive: document.querySelectorAll('button, input, select, textarea, a[href]').length,
+    canvas: Boolean(document.querySelector('canvas#stage')),
+    visible: [...document.querySelectorAll('.ov.show')].map((e) => e.className),
+  }));
+  check('the presenter shows only the visuals: no buttons, links or other controls, no overlays until switched on', controls.interactive === 0 && controls.canvas && controls.visible.length === 0, JSON.stringify(controls));
+  check('the main window shows the Present panel, with the presenter reported as showing', await page.isVisible('.presenter-panel'));
+  await page.waitForFunction(() => window.__phosphor.presenter.status === 'open' && window.__phosphor.presenter.stats, null, { timeout: 5000 }).catch(() => {});
+  const status = await page.locator('.pp-status').textContent();
+  check('...and its frame rate and delay', /^Showing in a window · \d+ fps/.test(status ?? ''), status);
+
+  // ---- following the main window
+  const same = (fn, timeout = 8000) => pres.waitForFunction(fn, null, { timeout }).then(() => true, () => false);
+  await page.keyboard.press('ArrowRight');
+  const nextId = await page.evaluate(() => window.__phosphor.renderer.currentId);
+  check('changing visualizer in the main window changes it in the presenter', await same(`window.__presenter.renderer.currentId === ${JSON.stringify(nextId)}`), nextId);
+  await page.evaluate(() => window.__phosphor.app.setVisualizer('milkdrop'));
+  await page.waitForFunction(() => window.__phosphor.renderer.variant, null, { timeout: 20000 }).catch(() => {});
+  let variant = await page.evaluate(() => window.__phosphor.renderer.variant);
+  check('MilkDrop: the presenter shows the same preset', Boolean(variant) && (await same(`window.__presenter.renderer.variant === ${JSON.stringify(variant)}`, 20000)), variant);
+  await page.keyboard.press('Shift+ArrowRight');
+  variant = await page.evaluate(() => window.__phosphor.renderer.variant);
+  check('...and follows a change of preset', await same(`window.__presenter.renderer.variant === ${JSON.stringify(variant)}`), variant);
+  await page.evaluate(() => window.__phosphor.app.setVisualizer('bars'));
+  await same(`window.__presenter.renderer.currentId === 'bars'`);
+
+  const art = await pres.evaluate(() => ({ art: Boolean(window.__presenter.state?.artwork), track: window.__presenter.state?.track?.title }));
+  check('the presenter has the song\'s artwork (and so the same colours)', art.art, JSON.stringify(art));
+
+  // ---- the audio: same frames, beats included, little delay
+  const sample = () =>
+    pres.evaluate(() => {
+      const sorted = (x) => [...x].sort((a, b) => a - b);
+      const draw = sorted(window.__presenter.latencies);
+      const arrive = sorted(window.__presenter.arrivals);
+      const a = window.__presenter.renderer.audio;
+      const at = (l, q) => l[Math.floor(l.length * q)] ?? 999;
+      return { level: a.level, beats: a.beatCount, n: draw.length, drawn: at(draw, 0.5), drawn95: at(draw, 0.95), arrived: at(arrive, 0.5), arrived95: at(arrive, 0.95) };
+    });
+  const resetDelays = () => pres.evaluate(() => (window.__presenter.latencies.splice(0), window.__presenter.arrivals.splice(0)));
+  await resetDelays();
+  const beats0 = await pres.evaluate(() => window.__presenter.renderer.audio.beatCount);
+  await page.waitForTimeout(4000);
+  const live = await sample();
+  const main = await page.evaluate(() => ({ beats: window.__phosphor.renderer.audio.beatCount, fps: window.__phosphor.renderer.stats.fps }));
+  check('the presenter reacts to the music: levels, and every beat the main window detects', live.level > 0.05 && live.beats > beats0 + 4 && Math.abs(live.beats - main.beats) <= 1, `level ${live.level.toFixed(2)}, beats ${beats0}→${live.beats} (main ${main.beats})`);
+  check(
+    'each frame reaches the presenter within a few milliseconds of the main window reading the audio',
+    live.n > 20 && live.arrived < 15,
+    `arrival median ${live.arrived.toFixed(1)} ms, 95th percentile ${live.arrived95.toFixed(1)} ms; behind the main window: median ${live.drawn.toFixed(1)} ms, 95th percentile ${live.drawn95.toFixed(1)} ms with both windows drawing on this machine's software graphics (main window ${main.fps.toFixed(0)} fps)`,
+  );
+
+  // The main window hidden or minimised draws nothing: the presenter's requests keep the analysis going.
+  // (With one window drawing, software graphics also keep up, so this measures the whole delay.)
+  await page.evaluate(() => window.__phosphor.renderer.stop());
+  await resetDelays();
+  const beats1 = await pres.evaluate(() => window.__presenter.renderer.audio.beatCount);
+  await page.waitForTimeout(3000);
+  const hidden = await sample();
+  check('with the main window not drawing at all (hidden), the presenter still gets fresh frames and every beat', hidden.beats > beats1 + 2 && hidden.n > 20, `beats ${beats1}→${hidden.beats}, ${hidden.n} frames in 3 s`);
+  check(
+    'the presenter runs under 50 ms behind the main window (the audio read there → this window starting to draw it)',
+    hidden.drawn < 50 && hidden.drawn95 < 50,
+    `median ${hidden.drawn.toFixed(1)} ms, 95th percentile ${hidden.drawn95.toFixed(1)} ms (arrival ${hidden.arrived.toFixed(1)} ms)`,
+  );
+  await page.evaluate(() => window.__phosphor.renderer.start());
+
+  // ---- overlays, from the main window only
+  await pres.setViewportSize({ width: 960, height: 540 });
+  const shown = (cls) => pres.evaluate((c) => document.querySelector(`.ov-${c}`)?.classList.contains('show') ?? false, cls);
+  await page.keyboard.press('Shift+T');
+  await pres.waitForTimeout(800);
+  const titleText = await pres.locator('.ov-title b').textContent();
+  check('Shift+T (or the Title tile) shows the title and artist on the presenter', (await shown('title')) && titleText === 'Signal Check (MP3)', titleText);
+  await page.click('.pp-tile.pp-logo');
+  await pres.waitForTimeout(800);
+  check('the Logo tile shows a logo (Phosphor\'s, until one is chosen)', (await shown('logo')) && (await pres.isVisible('.ov-logo .word')));
+  await page.setInputFiles('.presenter-panel input[type=file]', path.join(AUDIO, 'cover.png'));
+  const custom = await pres.waitForFunction(() => document.querySelector('.ov-logo')?.classList.contains('custom') && document.querySelector('.ov-logo img')?.naturalWidth > 0, null, { timeout: 5000 }).then(() => true, () => false);
+  check('...or the image chosen in the panel', custom);
+  await pres.screenshot({ path: path.join(SHOTS, 'presenter-overlays.png') });
+
+  await page.keyboard.press('Shift+Q');
+  await pres.waitForTimeout(500);
+  const qrNote = await page.locator('.presenter-panel .pp-hint').first().textContent();
+  check('the QR code stays hidden for a local file (no link), and the panel says why', !(await shown('qr')) && /Local files have no link/.test(qrNote ?? ''), qrNote);
+
+  await page.keyboard.press('Shift+B');
+  await pres.waitForTimeout(1500);
+  const dark = brightness(await pres.screenshot());
+  const pausedUnder = await pres.evaluate(() => window.__presenter.renderer.frozen);
+  check('Shift+B blacks the presenter out (and stops drawing underneath)', dark < 2 && pausedUnder, `brightness ${dark.toFixed(2)}`);
+  await page.keyboard.press('Shift+B');
+  await pres.waitForTimeout(1200);
+  const back = brightness(await pres.screenshot());
+  check('...and brings the visuals back', back > 8 && !(await pres.evaluate(() => window.__presenter.renderer.frozen)), `brightness ${back.toFixed(1)}`);
+
+  await page.keyboard.press('Shift+T');
+  await page.keyboard.press('Shift+L');
+  await pres.waitForTimeout(900);
+  await page.keyboard.press('Shift+Z');
+  await pres.waitForTimeout(300);
+  const f1 = await pres.screenshot();
+  await pres.waitForTimeout(1200);
+  const f2 = await pres.screenshot();
+  check('Shift+Z freezes the presenter on the current picture while the music plays on', f1.equals(f2) && (await page.evaluate(() => window.__phosphor.player.playing)));
+  await page.keyboard.press('Shift+Z');
+  await pres.waitForTimeout(600);
+  const f3 = await pres.screenshot();
+  check('...and unfreezes it', !f3.equals(f2));
+
+  // ---- preview off: the main window rests while the presenter draws
+  await page.click('.presenter-panel .switch');
+  const rest = await page.evaluate(() => ({ frozen: window.__phosphor.renderer.frozen, dim: document.body.classList.contains('preview-off') }));
+  await pres.evaluate(() => window.__presenter.latencies.splice(0));
+  await page.waitForTimeout(1500);
+  const stillLive = await pres.evaluate(() => window.__presenter.latencies.length);
+  check('"Preview in this window" off: the main window stops drawing, the presenter carries on', rest.frozen && rest.dim && stillLive > 10, `${stillLive} presenter frames in 1.5 s`);
+  await page.click('.presenter-panel .switch');
+
+  // ---- a streaming song: the QR code links to it
+  await page.keyboard.press('o');
+  await page.click('.tab[data-id="youtube"]');
+  await page.fill('input[type=url]', 'https://www.youtube.com/watch?v=aaaaaaaaaaa');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.results .row');
+  await page.click('.results .row >> nth=0 >> [title="Play now"]');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => window.__phosphor.player.current?.source === 'youtube' && window.__phosphor.player.playing, null, { timeout: 15000 }).catch(() => {});
+  await page.evaluate(() => window.__phosphor.settings.set({ presenterQrSize: 'large' }));
+  await pres.setViewportSize({ width: 1280, height: 720 });
+  await pres.waitForTimeout(1200);
+  const link = await page.evaluate(() => window.__phosphor.presenter.link);
+  const qrShot = await pres.locator('.ov-qr .code').screenshot().catch(() => null);
+  const decoded = qrShot ? readQr(qrShot) : null;
+  check('the QR code (left on from before) appears by itself once a song with a link plays, and decodes to the song\'s own link', (await shown('qr')) && link === 'https://www.youtube.com/watch?v=aaaaaaaaaaa' && decoded === link, `decoded ${decoded}`);
+  const whole = readQr(await pres.screenshot());
+  check('...readable from a screenshot of the whole presenter screen too', whole === link, String(whole));
+  const sizes = {};
+  for (const size of ['small', 'medium', 'large']) {
+    await page.evaluate((s) => window.__phosphor.settings.set({ presenterQrSize: s }), size);
+    await pres.waitForTimeout(300);
+    sizes[size] = Math.round((await pres.locator('.ov-qr .code').boundingBox())?.width ?? 0);
+  }
+  check('the QR code comes in three sizes', sizes.small < sizes.medium && sizes.medium < sizes.large, JSON.stringify(sizes));
+  await page.keyboard.press('Shift+T');
+  await pres.waitForTimeout(700);
+  await pres.screenshot({ path: path.join(SHOTS, 'presenter-qr.png') });
+  await page.keyboard.press('Shift+T');
+
+  // A song that changes in a list the service plays itself links to the song playing now.
+  const songLinks = await page.evaluate(() => {
+    const s = (id) => window.__phosphor.app.services.find((x) => x.id === id);
+    return {
+      spotifyTrack: s('spotify').link({ id: '1', source: 'spotify', title: 't', ref: 'spotify:track:4uLU6hMCjMI75M1A2tKUQC' }),
+      spotifyInList: s('spotify').link({ id: '2', source: 'spotify', title: 't', ref: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M', link: 'https://open.spotify.com/track/abc' }),
+      spotifyList: s('spotify').link({ id: '3', source: 'spotify', title: 't', ref: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M' }),
+      apple: s('apple').link({ id: '4', source: 'apple', title: 't', ref: '1440833098' }),
+      appleLibrary: s('apple').link({ id: '5', source: 'apple', title: 't', ref: 'i.abcdef' }),
+      youtube: s('youtube').link({ id: '6', source: 'youtube', title: 't', ref: 'aaaaaaaaaaa' }),
+    };
+  });
+  check(
+    'song links: Spotify track, the song playing in a Spotify list, Apple Music catalogue song, YouTube video; none for Apple library-only songs',
+    songLinks.spotifyTrack === 'https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC' &&
+      songLinks.spotifyInList === 'https://open.spotify.com/track/abc' &&
+      songLinks.spotifyList === 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M' &&
+      /^https:\/\/music\.apple\.com\/[a-z]{2}\/song\/1440833098$/.test(songLinks.apple) &&
+      songLinks.appleLibrary === null &&
+      songLinks.youtube === 'https://www.youtube.com/watch?v=aaaaaaaaaaa',
+    JSON.stringify(songLinks),
+  );
+  await page.screenshot({ path: path.join(SHOTS, 'presenter-panel.png') });
+
+  // ---- filling a screen from the main window (the click is handed to the presenter)
+  // The "Manage windows on all your displays" prompt can't be answered here, so set it.
+  const cdp = await browser.newBrowserCDPSession();
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  const pageTarget = targetInfos.find((t) => t.type === 'page' && t.url.startsWith(URL_));
+  const screensPermission = (setting) =>
+    cdp.send('Browser.setPermission', { permission: { name: 'window-management' }, setting, origin: new URL(URL_).origin, browserContextId: pageTarget.browserContextId });
+  const fullscreenNow = () => pres.waitForFunction(() => Boolean(document.fullscreenElement), null, { timeout: 4000 }).then(() => true, () => false);
+  await screensPermission('denied');
+  await page.click('.presenter-panel >> text=Fill a screen');
+  check('Fill a screen: one click in the main window makes the presenter fill its screen (screens permission refused)', await fullscreenNow());
+  await pres.evaluate(() => document.exitFullscreen().catch(() => {}));
+  await pres.waitForTimeout(600);
+  await screensPermission('granted');
+  await page.click('.presenter-panel >> text=Fill a screen');
+  const filled = await fullscreenNow();
+  await page.waitForTimeout(1200);
+  const fsStatus = await page.locator('.pp-status').textContent();
+  check('...and with it allowed (one screen here, so the one it is on), the panel then reports it full screen', filled && /^Showing full screen/.test(fsStatus ?? ''), fsStatus);
+  await pres.evaluate(() => document.exitFullscreen().catch(() => {}));
+
+  // ---- a presenter opened by hand (no direct line to the main window) asks over the channel
+  const manual = await context.newPage();
+  watch(manual, 'presenter opened by hand');
+  await manual.goto(new URL('present.html', URL_).href);
+  const manualFrames = await manual.waitForFunction(() => window.__presenter?.renderer.adopted && window.__presenter.arrivals.length > 10, null, { timeout: 10000 }).then(() => true, () => false);
+  const manualDelay = await manual.evaluate(() => {
+    const l = [...window.__presenter.arrivals].sort((a, b) => a - b);
+    return l[Math.floor(l.length / 2)] ?? 999;
+  });
+  const both = await page.evaluate(() => window.__phosphor.presenter.presenters);
+  check('a presenter page opened by hand (present.html) works too, over the channel, alongside the first', manualFrames && manualDelay < 30 && both === 2, `arrival median ${manualDelay.toFixed(1)} ms, ${both} presenters`);
+  await manual.close();
+
+  // ---- the main window reloads: the presenter waits, then picks up again
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor);
+  const rejoined = await page.waitForFunction(() => window.__phosphor.presenter.status === 'open', null, { timeout: 8000 }).then(() => true, () => false);
+  check('after the main window reloads, the open presenter reconnects by itself', rejoined && !pres.isClosed());
+
+  // ---- closing
+  await page.click('.present-btn');
+  await page.click('.presenter-panel >> text=Close presenter');
+  const closed = await pres.waitForEvent('close', { timeout: 5000 }).then(() => true, () => pres.isClosed());
+  await page.waitForTimeout(3000);
+  check('Close presenter closes the window', closed && (await page.evaluate(() => window.__phosphor.presenter.status)) === 'closed');
+  await browser.close();
+}
 
 // ---------------------------------------------------------------- visualizers
 
@@ -2021,7 +2289,7 @@ async function desktopApp(browser) {
   const { installYouTubeMock } = require('./mocks/youtube.cjs');
   await installYouTubeMock(context);
   await context.addInitScript(() => {
-    const sent = { states: [], levels: [] };
+    const sent = { states: [], levels: [], presentOn: [] };
     let onCommand = null;
     window.__desktopSent = sent;
     window.__desktopCommand = (name) => onCommand?.(name);
@@ -2033,6 +2301,11 @@ async function desktopApp(browser) {
         onCommand = callback;
         return () => (onCommand = null);
       },
+      presenterDisplays: async () => [
+        { id: 1, label: 'Built-in Retina Display (1512×982), main', primary: true },
+        { id: 7, label: 'Projector (1920×1080)', primary: false },
+      ],
+      presentOn: (id) => sent.presentOn.push(id),
     };
   });
   const page = await open(context, 'desktop');
@@ -2091,7 +2364,22 @@ async function desktopApp(browser) {
   await page.reload();
   await page.waitForFunction(() => window.__phosphor);
 
+  // The presenter: the app places it; Fill a screen lists the displays and asks the app.
+  const presenterPopup = page.waitForEvent('popup', { timeout: 10000 }).catch(() => null);
+  await page.click('.present-btn');
+  const presenterPage = await presenterPopup;
+  await page.waitForFunction(() => window.__phosphor.presenter.status === 'open', null, { timeout: 10000 }).catch(() => {});
+  await page.click('.presenter-panel >> text=Fill a screen');
+  await page.waitForSelector('.pp-screens button', { timeout: 5000 }).catch(() => {});
+  const displayButtons = await page.locator('.pp-screens button').allTextContents();
+  await page.click('.pp-screens >> text=Projector (1920×1080)').catch(() => {});
+  const asked = await page.evaluate(() => window.__desktopSent.presentOn);
+  check('in the app, Fill a screen lists the displays and has the app put the presenter on the chosen one', displayButtons.length === 2 && asked.length === 1 && asked[0] === 7, `${JSON.stringify(displayButtons)} → ${JSON.stringify(asked)}`);
+  await presenterPage?.close();
+  await page.click('.presenter-panel [aria-label="Hide this panel (D)"]').catch(() => {});
+
   // Streaming audio: the desktop app listens to the computer, without a dialog.
+  // (Plain Chromium shows its share dialog here, which the app never does, so clicks stop reaching the page after this.)
   await page.evaluate(() => {
     const { app, player } = window.__phosphor;
     const yt = app.services.find((s) => s.id === 'youtube');
@@ -2111,6 +2399,7 @@ async function desktopApp(browser) {
   const spotifySettings = await page.locator('.sheet[aria-label="Settings"]').innerText();
   const connect = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode);
   check("Spotify plays through the Spotify app in the desktop app (Electron has no Widevine for its web player), and Settings says so", connect && /Plays in\s*The Spotify app/.test(spotifySettings), spotifySettings.match(/Plays in[^\n]*\n?[^\n]*/)?.[0]);
+
   await context.close();
 
   // The mini player, with its bridge stubbed the way desktop/mini-preload.cjs provides it.
@@ -2174,6 +2463,7 @@ async function desktopApp(browser) {
   } finally {
     await browser.close();
   }
+  if (only.includes('presenter')) await presenter();
   if (only.includes('pwa')) await pwa();
   if (only.includes('capture')) await capture();
   if (only.includes('spotify')) await spotify();

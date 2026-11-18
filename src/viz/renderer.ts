@@ -5,8 +5,8 @@
 // up by scaling the internal resolution.
 
 import { Analysis, BANDS, FFT_SIZE, WAVE_SIZE, type AudioFrame } from '../audio/analysis';
+import { applyEvents, decodeFrame, eventBits, type DecodedFrame } from '../audio/frameCodec';
 import type { BeatGrid } from '../audio/rhythm';
-import type { AudioEngine } from '../audio/engine';
 import { FS_HEADER } from '../gl/glsl';
 import {
   bindTexture,
@@ -33,6 +33,24 @@ import {
 } from './types';
 
 export type Quality = 'auto' | 'high' | 'medium' | 'low';
+
+/** Where the renderer reads its audio: the AudioEngine, or a stand-in in a window that only mirrors frames. */
+export interface RendererAudio {
+  readonly context: { readonly sampleRate: number };
+  /** 'local' when the playing file is analysed (beat grids then follow its position). */
+  readonly analysisInput: string;
+  readonly element: { readonly currentTime: number };
+  /** Copies the most recent FFT_SIZE samples of each channel. */
+  read(left: Float32Array<ArrayBuffer>, right: Float32Array<ArrayBuffer>): void;
+}
+
+export interface RendererOptions {
+  /**
+   * Visualizers follow another window instead of choosing for themselves (the
+   * presenter): MilkDrop, for one, changes preset only when told to.
+   */
+  follower?: boolean;
+}
 
 const HISTORY_STEP = 1 / 60;
 
@@ -85,11 +103,26 @@ export class Renderer {
   onError: (def: VisualizerDef, error: unknown) => void = () => {};
   /** Fired when a visualizer reports a new variant (e.g. a MilkDrop preset). */
   onVariant: (name: string) => void = () => {};
+  /** Fired after every analysis step, with the new frame (the presenter mirrors these). */
+  onAnalysis: ((frame: AudioFrame, analysis: Analysis) => void) | null = null;
+  /** Called just before each frame is drawn (the presenter fetches the main window's latest analysis here). */
+  beforeFrame: (() => void) | null = null;
+  /** Fired after a frame is drawn, with its requestAnimationFrame time. */
+  onDrawn: ((now: number) => void) | null = null;
+  /** Hold the picture: keep the last frame on screen and draw nothing new. */
+  frozen = false;
 
   crossfadeSeconds = 1.6;
 
   private ctx: VizContext;
   private analysis: Analysis;
+  /** performance.now() of the last analysis step. */
+  private analysedAt = 0;
+  /** Single-frame events (beats, hits, drops) since the last drawn frame. */
+  private drawEvents = 0;
+  /** Frames come from another window (adoptFrame) instead of this one's audio. */
+  private external = false;
+  private lastAdopted: DecodedFrame | null = null;
   private left = new Float32Array(FFT_SIZE);
   private right = new Float32Array(FFT_SIZE);
 
@@ -100,6 +133,7 @@ export class Renderer {
   private historyAcc = 0;
 
   private artworkTex: WebGLTexture | null = null;
+  private artworkCanvas: HTMLCanvasElement | null = null;
   private blankTex: WebGLTexture;
   private artworkVersion = 0;
   private palette = new Float32Array(12);
@@ -137,7 +171,8 @@ export class Renderer {
 
   constructor(
     private canvas: HTMLCanvasElement,
-    private engine: AudioEngine,
+    private engine: RendererAudio,
+    options: RendererOptions = {},
   ) {
     const gl = canvas.getContext('webgl2', {
       alpha: false,
@@ -173,6 +208,7 @@ export class Renderer {
       hdr,
       quality: 0.75,
       random: () => this.random(),
+      follower: Boolean(options.follower),
       spectrumTex: this.spectrumTex.tex,
       waveTex: this.waveTex.tex,
       historyTex: this.historyTex.tex,
@@ -196,13 +232,7 @@ export class Renderer {
     // drawing), so the levels stay live for the tab icon and, in the desktop
     // app, the menu bar or tray visualizer and the mini player.
     this.listenTimer = window.setInterval(() => {
-      const now = performance.now();
-      if (!this.running || now - this.lastTime < 250) return;
-      const dt = Math.min(0.1, (now - this.lastTime) / 1000);
-      this.lastTime = now;
-      this.engine.read(this.left, this.right);
-      const position = this.analysis.hasBeatGrid && this.engine.analysisInput === 'local' ? this.engine.element.currentTime : undefined;
-      this.analysis.process(this.left, this.right, dt, position);
+      if (this.running) this.analyse(performance.now(), 250);
     }, 100);
   }
 
@@ -230,6 +260,55 @@ export class Renderer {
   /** The most recent analysis frame, for UI that wants to react to audio. */
   get audio(): AudioFrame {
     return this.analysis.frame;
+  }
+
+  /** The analysis itself (the presenter encodes its frames). */
+  get analyser(): Analysis {
+    return this.analysis;
+  }
+
+  /**
+   * Reads the audio and advances the analysis, unless it already ran within
+   * the last `minGapMs`. Normally the render loop calls this every frame; a
+   * presenter window asks for frames too, which keeps them coming while this
+   * window is hidden and draws nothing. Returns whether it ran.
+   */
+  analyse(now = performance.now(), minGapMs = 0): boolean {
+    if (this.external) return false;
+    const elapsed = now - this.analysedAt;
+    if (this.analysedAt > 0 && elapsed < minGapMs) return false;
+    const dt = this.analysedAt > 0 ? Math.min(0.1, Math.max(0.0005, elapsed / 1000)) : 1 / 60;
+    this.analysedAt = now;
+    this.engine.read(this.left, this.right);
+    // With a beat grid for the playing file, beats follow its playback position exactly.
+    const position = this.analysis.hasBeatGrid && this.engine.analysisInput === 'local' ? this.engine.element.currentTime : undefined;
+    const frame = this.analysis.process(this.left, this.right, dt, position);
+    this.drawEvents |= eventBits(frame);
+    this.onAnalysis?.(frame, this.analysis);
+    return true;
+  }
+
+  /** When the analysis last ran (performance.now()). */
+  get lastAnalysis(): number {
+    return this.analysedAt;
+  }
+
+  /**
+   * Shows a frame analysed in another window (see audio/frameCodec.ts). From
+   * the first one on, this renderer stops reading audio of its own.
+   */
+  adoptFrame(buffer: ArrayBuffer): DecodedFrame | null {
+    const decoded = decodeFrame(buffer, this.analysis);
+    if (!decoded) return null;
+    this.external = true;
+    this.drawEvents |= decoded.events;
+    this.lastAdopted = decoded;
+    return decoded;
+  }
+
+  /** The frame most recently adopted from another window, if any. */
+  get adopted(): DecodedFrame | null {
+    return this.lastAdopted;
   }
 
   // ------------------------------------------------------------- visualizers
@@ -295,6 +374,16 @@ export class Renderer {
     return Boolean(this.current?.viz.nextVariant);
   }
 
+  /** The current visualizer's variant (MilkDrop: the preset's name), when it has them. */
+  get variant(): string | undefined {
+    return this.current?.viz.variant?.();
+  }
+
+  /** Switches the current visualizer to a named variant (the presenter following the main window). */
+  setVariant(name: string) {
+    this.current?.viz.setVariant?.(name);
+  }
+
   setAutoCycle(enabled: boolean, seconds: number, shuffle = true) {
     this.cycleEnabled = enabled;
     this.cycleSeconds = Math.max(5, seconds);
@@ -333,6 +422,7 @@ export class Renderer {
       gl.deleteTexture(this.artworkTex);
       this.artworkTex = null;
     }
+    this.artworkCanvas = null;
     this.artworkVersion++;
     if (!image) {
       this.setPalette(null);
@@ -360,6 +450,7 @@ export class Renderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       this.artworkTex = tex;
+      this.artworkCanvas = square;
       const palette = paletteFromImage(square);
       this.setPalette(palette);
       return palette;
@@ -370,6 +461,21 @@ export class Renderer {
       this.setPalette(null);
       return null;
     }
+  }
+
+  /** The cover the visualizers are using (square, at most 768 px), or null. */
+  get artworkImage(): HTMLCanvasElement | null {
+    return this.artworkCanvas;
+  }
+
+  /** Increments whenever the artwork changes. */
+  get artworkRevision(): number {
+    return this.artworkVersion;
+  }
+
+  /** The palette being faded towards: four RGB colours as 12 floats. */
+  get paletteTargetValues(): number[] {
+    return Array.from(this.paletteTarget);
   }
 
   setPalette(colors: RGB[] | null, immediate = false) {
@@ -451,13 +557,22 @@ export class Renderer {
     const dtMs = now - this.lastTime;
     this.lastTime = now;
     const dt = Math.min(0.1, Math.max(0.0005, dtMs / 1000));
+    // Frozen: the last frame stays on screen (nothing is drawn, so nothing replaces it).
+    if (this.frozen) {
+      this.analyse(performance.now(), 4);
+      return;
+    }
     this.adaptQuality(dtMs, now);
     this.ensureSize();
+    this.beforeFrame?.();
 
-    this.engine.read(this.left, this.right);
-    // With a beat grid for the playing file, beats follow its playback position exactly.
-    const position = this.analysis.hasBeatGrid && this.engine.analysisInput === 'local' ? this.engine.element.currentTime : undefined;
-    const audio = this.analysis.process(this.left, this.right, dt, position);
+    // Every frame (a 120 Hz display analyses at 120 Hz), unless a presenter
+    // window's request just did it.
+    this.analyse(performance.now(), 4);
+    const audio = this.analysis.frame;
+    // A beat that landed in a step this window didn't draw still counts once.
+    applyEvents(audio, this.drawEvents);
+    this.drawEvents = 0;
 
     if (this.cycleEnabled && this.fade >= 1 && audio.presence > 0.2) {
       this.cycleElapsed += dt;
@@ -466,6 +581,7 @@ export class Renderer {
 
     this.time += dt;
     this.draw(audio, this.analysis, dt, this.time, null, this.canvas.width, this.canvas.height);
+    this.onDrawn?.(now);
   };
 
   private uploadAudio(analysis: Analysis, dt: number) {

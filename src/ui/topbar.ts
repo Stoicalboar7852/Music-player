@@ -28,6 +28,9 @@ export function createTopbar(app: App) {
     name,
   );
   const auto = iconButton('sparkles', 'Auto-cycle visualizers (A)', () => app.setAutoCycle(!settings.get('autoCycle')));
+  const present = iconButton('present', 'Present: visuals on another screen (D)', () => app.togglePresenter(), 'present-btn');
+  // A second window for an audience screen makes no sense on a phone.
+  const touchOnly = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
   const stats = h('div', { class: 'stats glass', hidden: true });
 
   const el = h(
@@ -46,6 +49,7 @@ export function createTopbar(app: App) {
         iconButton('chevronRight', 'Next visualizer (→)', () => app.stepVisualizer(1)),
       ),
       h('div', { class: 'viz-switch glass' }, auto),
+      touchOnly ? null : h('div', { class: 'viz-switch glass hide-narrow' }, present),
       h('div', { class: 'viz-switch glass hide-narrow' }, iconButton('keyboard', 'Keyboard shortcuts (?)', () => app.openSheet('shortcuts'))),
     ),
   );
@@ -58,12 +62,16 @@ export function createTopbar(app: App) {
     auto.title = settings.get('autoCycle')
       ? `Auto-cycle is on: every ${settings.get('cycleSeconds')}s (A)`
       : 'Auto-cycle visualizers (A)';
+    const presenting = app.presenter.status !== 'closed';
+    present.classList.toggle('on', presenting);
+    present.title = presenting ? 'Presenter: overlays and screens (D)' : 'Present: visuals on another screen (D)';
     chip.hidden = !capture.state.active;
     chipLabel.textContent = capture.state.label;
     stats.hidden = !settings.get('showStats');
   };
   capture.on('change', render);
   settings.on('change', render);
+  app.presenter.on('change', render);
 
   /** ~20 times a second: animate the brand mark from the live analysis, refresh stats. */
   const tick = () => {
@@ -77,5 +85,5 @@ export function createTopbar(app: App) {
   };
 
   render();
-  return { el, render, tick };
+  return { el, render, tick, presentButton: present };
 }

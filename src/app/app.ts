@@ -7,6 +7,7 @@ import type { PlaylistLibrary } from '../library/playlists';
 import type { IncomingFile } from '../player/local';
 import type { Player } from '../player/player';
 import type { Collection, Track } from '../player/types';
+import type { PresenterHost } from '../present/host';
 import type { MusicService } from '../services/types';
 import type { Renderer } from '../viz/renderer';
 
@@ -21,6 +22,8 @@ export interface App {
   library: PlaylistLibrary;
   /** Beat grids for local files, worked out in the background. */
   beatGrids: BeatGrids;
+  /** The presenter window (visuals only, for an audience screen) and its overlays. */
+  presenter: PresenterHost;
 
   toast(message: string, kind?: 'info' | 'error'): void;
   /** Opens a sheet, optionally on a specific tab/section. */
@@ -38,6 +41,8 @@ export interface App {
   setVisualizer(id: string): void;
   stepVisualizer(direction: 1 | -1): void;
   setAutoCycle(on: boolean): void;
+  /** Opens the presenter window, or shows/hides its panel when it is open. Call from a click or key press. */
+  togglePresenter(): void;
   /** Plays (or, with append, queues) a Phosphor playlist. Call from a click: local files may need permission again. */
   playPlaylist(id: string, opts?: { append?: boolean }): Promise<void>;
   /** Opens the "add to which playlist?" menu next to `anchor`. */

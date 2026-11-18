@@ -18,6 +18,12 @@ import { appBaseUrl, settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
 import type { MusicService, SearchResults, ServiceStatus, Shelf } from './types';
 
+/** The open.spotify.com page for a Spotify URI (spotify:track:…, :album:, :playlist:), or null. */
+export function spotifyWebLink(uri: string | undefined | null): string | null {
+  const m = /^spotify:(track|album|playlist|episode|show|artist):([A-Za-z0-9]+)$/.exec(uri ?? '');
+  return m ? `https://open.spotify.com/${m[1]}/${m[2]}` : null;
+}
+
 const ACCOUNTS = 'https://accounts.spotify.com';
 const API = 'https://api.spotify.com/v1';
 const SDK_URL = 'https://sdk.scdn.co/spotify-player.js';
@@ -905,6 +911,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
         album: current.album.name,
         artworkUrl: current.album.images[0]?.url,
         duration: state.duration / 1000,
+        link: spotifyWebLink(current.uri) ?? undefined,
       });
     }
     this.furthest = Math.max(this.furthest, state.position);
@@ -1405,6 +1412,11 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     await this.authorize();
     if (!this.sdk) await this.startSdk();
     this.emit('status', undefined);
+  }
+
+  link(track: Track): string | null {
+    if (track.link) return track.link;
+    return spotifyWebLink(track.ref);
   }
 
   async resolveLink(url: string): Promise<SearchResults | null> {

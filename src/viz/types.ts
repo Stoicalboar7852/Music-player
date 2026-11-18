@@ -37,6 +37,11 @@ export interface VizContext {
   /** Deterministic PRNG, so test runs are repeatable. Use instead of Math.random. */
   random(): number;
   /**
+   * True in a window that mirrors another (the presenter): don't change
+   * variant on your own; the other window's choice arrives via setVariant.
+   */
+  follower: boolean;
+  /**
    * Shared textures, already bound to their reserved units every frame:
    *  - spectrum: BANDS x 1, R = magnitude 0..1 (log-spaced frequency on x)
    *  - wave: WAVE_SIZE x 1, R = mono, G = left, B = right (0.5 = silence)
@@ -77,6 +82,10 @@ export interface Visualizer {
   ready?: Promise<void>;
   /** Optional: step through built-in variations (e.g. MilkDrop presets). */
   nextVariant?(direction: 1 | -1): string | void;
+  /** Optional: the current variation's name. */
+  variant?(): string | undefined;
+  /** Optional: switch to a variation by name (also before the visualizer has finished loading). */
+  setVariant?(name: string): void;
 }
 
 export interface VisualizerDef {

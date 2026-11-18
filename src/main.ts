@@ -13,6 +13,7 @@ import { animateFavicon } from './ui/favicon';
 import { planTransition } from './player/transitions';
 import { createHarness } from './debug/harness';
 import { PlaylistLibrary } from './library/playlists';
+import { PresenterHost } from './present/host';
 import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pickFiles, pickFolder, tracksFromFiles, type IncomingFile } from './player/local';
 import { connectMediaSession } from './player/mediaSession';
 import { Player } from './player/player';
@@ -27,6 +28,7 @@ import { openGallery } from './ui/gallery';
 import { installShortcuts, openShortcuts } from './ui/keys';
 import { openLibrary } from './ui/library';
 import { openPlaylistMenu } from './ui/playlistMenu';
+import { createPresenterPanel } from './ui/presenterPanel';
 import { createQueue } from './ui/queue';
 import { openSettings } from './ui/settingsSheet';
 import { createSheets } from './ui/sheets';
@@ -101,6 +103,8 @@ const app: App = {
   services,
   library,
   beatGrids,
+  // Set just below, once the app exists (the presenter needs it).
+  presenter: undefined as unknown as PresenterHost,
 
   toast: (message, kind) => toasts.show(message, kind),
 
@@ -182,6 +186,12 @@ const app: App = {
     if (!renderer.setVisualizer(id)) toasts.show("That visualizer couldn't start on this graphics hardware.", 'error');
   },
   stepVisualizer: (direction) => renderer.step(direction),
+  togglePresenter() {
+    if (app.presenter.status === 'closed') {
+      app.presenter.open();
+      presenterPanel.show();
+    } else presenterPanel.toggle();
+  },
   async playPlaylist(id: string, opts = {}) {
     const playlist = library.get(id);
     if (!playlist) return;
@@ -212,6 +222,8 @@ const app: App = {
   },
 };
 
+app.presenter = new PresenterHost(app);
+const presenterPanel = createPresenterPanel(app, app.presenter);
 const topbar = createTopbar(app);
 const dock = createDock(app);
 const queue = createQueue(app);
@@ -256,7 +268,7 @@ const banner = h('div', { class: 'banner glass', hidden: true }, bannerText, sha
 
 const dropzone = h('div', { class: 'dropzone' }, 'Drop to add to the queue');
 
-hud.append(h('div', { class: 'scrim-top' }), h('div', { class: 'scrim-bottom' }), topbar.el, welcome.el, queue.el, banner, dock.el);
+hud.append(h('div', { class: 'scrim-top' }), h('div', { class: 'scrim-bottom' }), topbar.el, presenterPanel.el, welcome.el, queue.el, banner, dock.el);
 root.append(hud, toasts.el, dropzone, fileInput, folderInput);
 
 // --------------------------------------------------------------- behaviour
@@ -485,7 +497,7 @@ function mayHide(): boolean {
   const busy =
     sheets.isOpen ||
     dragDepth > 0 ||
-    document.querySelector('.dock:hover, .topbar:hover, .drawer.open:hover, .banner:hover') !== null ||
+    document.querySelector('.dock:hover, .topbar:hover, .drawer.open:hover, .banner:hover, .presenter-panel:hover') !== null ||
     document.activeElement instanceof HTMLInputElement;
   return allowed && active && !busy;
 }
@@ -545,4 +557,4 @@ window.setInterval(() => dock.tick(), 200);
 window.setInterval(() => topbar.tick(), 50);
 
 // Hooks for the automated verification scripts (see scripts/verify.cjs).
-Object.assign(window, { __phosphor: { app, engine, renderer, player, capture, settings, harness: createHarness(renderer) } });
+Object.assign(window, { __phosphor: { app, engine, renderer, player, capture, settings, presenter: app.presenter, harness: createHarness(renderer) } });

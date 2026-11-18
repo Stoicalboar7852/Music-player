@@ -36,6 +36,9 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 let win = null;
 /** @type {BrowserWindow | null} */
 let mini = null;
+/** The presenter window (visuals only, for an audience screen), which the page opens. */
+/** @type {BrowserWindow | null} */
+let presenter = null;
 /** @type {Tray | null} */
 let tray = null;
 /** @type {{ url: string, origin: string, port: number, close(): Promise<void> } | null} */
@@ -82,6 +85,15 @@ function createWindow() {
   });
   void win.loadURL(server.url);
 
+  win.webContents.on('did-create-window', (child, details) => {
+    if (details.frameName !== 'phosphor-presenter') return;
+    presenter = child;
+    child.setMenuBarVisibility(false);
+    child.on('closed', () => {
+      if (presenter === child) presenter = null;
+    });
+  });
+
   // Like other music players, closing the window keeps the music going; the
   // menu bar or tray icon, the Dock or the taskbar bring it back.
   win.on('close', (event) => {
@@ -92,7 +104,11 @@ function createWindow() {
 
   // Sign-in pop-ups (Google for YouTube, Apple Music) open inside the app;
   // any other link opens in the browser.
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  win.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    // The presenter: full screen on another display when there is one.
+    if (frameName === 'phosphor-presenter' && (url === 'about:blank' || isOurs(url, '/present.html'))) {
+      return { action: 'allow', overrideBrowserWindowOptions: presenterOptions() };
+    }
     let host = '';
     try {
       host = new URL(url).hostname;
@@ -106,6 +122,61 @@ function createWindow() {
     if (url.startsWith('http:') || url.startsWith('https:')) void shell.openExternal(url);
     return { action: 'deny' };
   });
+}
+
+/** Whether `url` is Phosphor's own page at `pathname`. */
+function isOurs(url, pathname) {
+  try {
+    const u = new URL(url);
+    return u.origin === server?.origin && u.pathname === pathname;
+  } catch {
+    return false;
+  }
+}
+
+/** A display other than the one the main window is on, if there is one. */
+function otherDisplay() {
+  const all = screen.getAllDisplays();
+  if (all.length < 2) return null;
+  const mine = win ? screen.getDisplayMatching(win.getBounds()) : screen.getPrimaryDisplay();
+  return all.find((d) => d.id !== mine.id) ?? null;
+}
+
+function presenterOptions() {
+  const display = otherDisplay();
+  const area = display?.bounds ?? screen.getPrimaryDisplay().workArea;
+  const width = display ? area.width : Math.min(1280, area.width);
+  const height = display ? area.height : Math.min(720, area.height);
+  return {
+    x: Math.round(area.x + (area.width - width) / 2),
+    y: Math.round(area.y + (area.height - height) / 2),
+    width,
+    height,
+    // On another display it fills it; on the only one it opens as a window to drag over.
+    fullscreen: Boolean(display),
+    title: 'Phosphor Presenter',
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    icon: isMac ? undefined : path.join(here, 'web', 'icons', 'icon-512.png'),
+    webPreferences: { contextIsolation: true, sandbox: true, backgroundThrottling: false },
+  };
+}
+
+/** Moves the presenter onto a display and fills it (null: the display it is on). */
+function presentOn(id) {
+  const target = presenter;
+  if (!target || target.isDestroyed()) return;
+  const display = screen.getAllDisplays().find((d) => d.id === id) ?? screen.getDisplayMatching(target.getBounds());
+  const fill = () => {
+    target.setBounds(display.bounds);
+    target.setFullScreen(true);
+    target.focus();
+  };
+  // macOS animates out of full screen before the window can move.
+  if (target.isFullScreen() && screen.getDisplayMatching(target.getBounds()).id !== display.id) {
+    target.once('leave-full-screen', () => setTimeout(fill, 50));
+    target.setFullScreen(false);
+  } else fill();
 }
 
 // -------------------------------------------------------- audio and access
@@ -327,6 +398,20 @@ function setUpMessages() {
     if (fromPhosphor(event)) void shell.openExternal('spotify:').catch(() => {});
   });
 
+  ipcMain.handle('phosphor:presenter-displays', (event) => {
+    if (!fromPhosphor(event)) return [];
+    const primary = screen.getPrimaryDisplay().id;
+    return screen.getAllDisplays().map((d, i) => ({
+      id: d.id,
+      label: `${d.label || `Display ${i + 1}`} (${d.size.width}×${d.size.height})${d.id === primary ? ', main' : ''}`,
+      primary: d.id === primary,
+    }));
+  });
+
+  ipcMain.on('phosphor:present-on', (event, id) => {
+    if (fromPhosphor(event)) presentOn(typeof id === 'number' ? id : null);
+  });
+
   ipcMain.on('mini:command', (event, name) => {
     if (event.sender !== mini?.webContents) return;
     if (name === 'show') {
@@ -378,6 +463,9 @@ globalThis.__phosphorDesktop = {
   },
   get miniVisible() {
     return Boolean(mini?.isVisible());
+  },
+  get presenter() {
+    return presenter && !presenter.isDestroyed() ? { bounds: presenter.getBounds(), fullScreen: presenter.isFullScreen(), url: presenter.webContents.getURL() } : null;
   },
   command,
   toggleMini,

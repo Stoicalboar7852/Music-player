@@ -22,6 +22,12 @@ const SHORTCUTS: [keys: string[], what: string][] = [
   [['O'], 'Add music'],
   [['C'], 'Capture system or tab audio'],
   [['F'], 'Fullscreen (or double-click the visuals)'],
+  [['D'], 'Present: open the presenter window, then show or hide its panel'],
+  [['Shift', 'Q'], 'Presenter: QR code for the song'],
+  [['Shift', 'T'], 'Presenter: title and artist'],
+  [['Shift', 'L'], 'Presenter: logo'],
+  [['Shift', 'B'], 'Presenter: blackout'],
+  [['Shift', 'Z'], 'Presenter: freeze'],
   [[','], 'Settings'],
   [['?'], 'This list'],
   [['Esc'], 'Close whatever is open'],
@@ -110,7 +116,19 @@ export function installShortcuts(app: App, ui: { sheetOpen: () => boolean; queue
       return;
     }
 
+    // Presenter overlays: Shift and a letter.
+    const overlay = e.shiftKey ? ({ Q: 'qr', T: 'title', L: 'logo', B: 'blackout', Z: 'freeze' } as const)[e.key.toUpperCase() as 'Q'] : undefined;
+    if (overlay) {
+      handled();
+      if (app.presenter.status === 'closed') app.toast('Open the presenter first (D).');
+      else app.presenter.toggleOverlay(overlay);
+      return;
+    }
+
     switch (e.key.toLowerCase()) {
+      case 'd':
+        app.togglePresenter();
+        break;
       case 'n':
         void player.next();
         break;

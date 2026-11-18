@@ -84,4 +84,6 @@ export interface MusicService {
   readonly account?: OptionalAccount;
   /** Turns a pasted link into something playable, or null if it isn't one of ours. */
   resolveLink(url: string): Promise<SearchResults | null>;
+  /** The song's page on the service, for a QR code people can scan; null when there is none. */
+  link(track: Track): string | null;
 }

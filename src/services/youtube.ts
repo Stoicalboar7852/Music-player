@@ -672,6 +672,11 @@ export class YouTubeService extends Emitter<{ status: void }> implements MusicSe
     }
   }
 
+  link(track: Track): string | null {
+    if (track.link) return track.link;
+    return track.ref && /^[\w-]{11}$/.test(track.ref) ? `https://www.youtube.com/watch?v=${track.ref}` : null;
+  }
+
   async resolveLink(url: string): Promise<SearchResults | null> {
     const parsed = parseYouTubeLink(url);
     if (!parsed) return null;

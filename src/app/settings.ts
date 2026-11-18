@@ -35,6 +35,8 @@ export interface Settings {
   youtubeApiKey: string;
   /** Google OAuth client ID (web application), for signing in to YouTube. */
   googleClientId: string;
+  /** How big the presenter window's QR code is. */
+  presenterQrSize: 'small' | 'medium' | 'large';
 }
 
 const DEFAULTS: Settings = {
@@ -58,6 +60,7 @@ const DEFAULTS: Settings = {
   appleDeveloperToken: '',
   youtubeApiKey: '',
   googleClientId: '',
+  presenterQrSize: 'medium',
 };
 
 const KEY = 'phosphor.settings.v1';

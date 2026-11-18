@@ -305,6 +305,7 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
         title: item.title ?? a?.name,
         artist: item.artistName ?? a?.artistName,
         album: item.albumName ?? a?.albumName,
+        link: item.id && /^\d+$/.test(item.id) ? `https://music.apple.com/${this.storefront()}/song/${item.id}` : undefined,
         artworkUrl: artworkUrl(item.artwork ?? a?.artwork),
         duration: item.playbackDuration ? item.playbackDuration / 1000 : a?.durationInMillis ? a.durationInMillis / 1000 : undefined,
       });
@@ -521,6 +522,12 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
     const base = type.startsWith('library-') ? `/v1/me/library/${type.slice(8)}` : `/v1/catalog/${this.storefront()}/${type}`;
     const songs = await this.all(`${base}/${id}/tracks`);
     return songs.map((r) => this.toTrack(r, collection.artworkUrl)).filter((t): t is Track => t !== null);
+  }
+
+  link(track: Track): string | null {
+    if (track.link) return track.link;
+    // Catalog songs have numeric ids; library-only songs (i.…) and stations have no song page.
+    return track.ref && /^\d+$/.test(track.ref) && !track.context ? `https://music.apple.com/${this.storefront()}/song/${track.ref}` : null;
   }
 
   async resolveLink(url: string): Promise<SearchResults | null> {

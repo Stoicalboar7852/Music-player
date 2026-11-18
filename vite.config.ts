@@ -26,6 +26,7 @@ function serviceWorker(): Plugin {
     },
     generateBundle(_options, bundle) {
       const built = Object.keys(bundle).filter((file) => file !== 'index.html' && !file.endsWith('.map'));
+      // (present.html stays in the list: the presenter opens offline too.)
       const copied = publicDir ? walk(publicDir).map((path) => relative(publicDir, path).split(sep).join('/')) : [];
       const files = ['./', ...[...built, ...copied].sort().map((file) => `./${file}`)];
       const version = createHash('sha256').update(files.join('\n')).digest('hex').slice(0, 12);
@@ -44,6 +45,11 @@ export default defineConfig({
   // (desktop/ holds the desktop app, with its own copy of the build: not part of this site.)
   server: { host: '127.0.0.1', port: 5173, strictPort: true, watch: { ignored: ['**/desktop/**'] } },
   preview: { host: '127.0.0.1', port: 5173, strictPort: true },
-  build: { target: 'es2022', chunkSizeWarningLimit: 1500 },
+  build: {
+    target: 'es2022',
+    chunkSizeWarningLimit: 1500,
+    // The app, and the presenter window it opens (visuals only, for an audience screen).
+    rollupOptions: { input: { main: 'index.html', present: 'present.html' } },
+  },
   plugins: [serviceWorker()],
 });

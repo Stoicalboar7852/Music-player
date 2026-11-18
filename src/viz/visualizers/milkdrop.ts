@@ -92,6 +92,8 @@ export default defineVisualizer({
     let presetAge = 0;
     let disposed = false;
     let size: [number, number] = [640, 360];
+    /** A preset asked for (setVariant) before the pack had loaded. */
+    let wanted: string | null = null;
 
     const load = (i: number, blend: number): string => {
       index = (i + names.length) % names.length;
@@ -130,7 +132,8 @@ export default defineVisualizer({
         pixelRatio: 1,
         textureRatio: 1,
       });
-      load(Math.floor(ctx.random() * names.length), 0);
+      const start = wanted ? names.indexOf(wanted) : -1;
+      load(start >= 0 ? start : Math.floor(ctx.random() * names.length), 0);
     })();
     ready.catch((error) => console.error('MilkDrop failed to load', error));
 
@@ -153,8 +156,11 @@ export default defineVisualizer({
             right[i] = 128 + a.waveR[i] * 110;
           }
           presetAge += frame.dt;
-          // Change preset on a drop (scene change), or on a beat once the current one has had its time.
-          if ((a.drop && presetAge > 8) || (presetAge > PRESET_SECONDS && (a.beat || presetAge > PRESET_SECONDS + 4))) load(index + 1, BLEND_SECONDS);
+          // Change preset on a drop (scene change), or on a beat once the current
+          // one has had its time. (A presenter window follows the main one instead.)
+          if (!ctx.follower && ((a.drop && presetAge > 8) || (presetAge > PRESET_SECONDS && (a.beat || presetAge > PRESET_SECONDS + 4)))) {
+            load(index + 1, BLEND_SECONDS);
+          }
           engine.render({
             audioLevels: { timeByteArray: mono, timeByteArrayL: left, timeByteArrayR: right },
             elapsedTime: frame.dt,
@@ -172,6 +178,17 @@ export default defineVisualizer({
       nextVariant(direction) {
         if (!engine || names.length === 0) return;
         return load(index + direction, 1.2);
+      },
+      variant() {
+        return engine && names.length ? names[index] : undefined;
+      },
+      setVariant(name) {
+        if (!engine) {
+          wanted = name;
+          return;
+        }
+        const i = names.indexOf(name);
+        if (i >= 0 && i !== index) load(i, BLEND_SECONDS);
       },
       dispose() {
         disposed = true;

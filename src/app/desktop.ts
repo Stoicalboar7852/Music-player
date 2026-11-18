@@ -39,6 +39,10 @@ interface DesktopBridge {
   onCommand(callback: (name: string) => void): () => void;
   /** Starts the Spotify app (for Spotify Connect). */
   openSpotify?(): void;
+  /** The displays the presenter window can fill. */
+  presenterDisplays?(): Promise<{ id: number; label: string; primary: boolean }[]>;
+  /** Makes the presenter window fill a display (null: the one it is on). */
+  presentOn?(id: number | null): void;
 }
 
 export const desktop: DesktopBridge | null = (window as Window & { phosphorDesktop?: DesktopBridge }).phosphorDesktop ?? null;

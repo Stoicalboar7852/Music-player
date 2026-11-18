@@ -45,6 +45,12 @@ export const ICONS = {
   external: stroke('<path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/>'),
   refresh: stroke('<path d="M19.500 8.500A8 8 0 1 0 20 12"/><path d="M20 4v4.500h-4.500"/>'),
   copy: stroke('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>'),
+  present: stroke('<rect x="3" y="4.500" width="18" height="12" rx="2"/><path d="M8 20h8M12 16.500V20"/><path d="M10.500 8.200v5.100l4.300-2.550z"/>'),
+  qr: stroke('<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2.500v2.500H14zM18 18h2v2h-2zM14 19.500h1.500M19.500 14H20"/>'),
+  lowerThird: stroke('<rect x="3" y="4.500" width="18" height="15" rx="2"/><path d="M6.500 15.500h8M6.500 12.500h5"/>'),
+  badge: stroke('<path d="M12 3.500l7.400 4.250v8.500L12 20.500l-7.400-4.250v-8.500z"/><circle cx="12" cy="12" r="2.800"/>'),
+  moon: stroke('<path d="M19 14.500A7.500 7.500 0 1 1 9.500 5a6 6 0 0 0 9.500 9.500z"/>'),
+  snowflake: stroke('<path d="M12 3v18M4.200 7.500l15.600 9M4.200 16.500l15.600-9"/><path d="m9.500 4.700 2.500 2 2.500-2M9.500 19.300l2.500-2 2.500 2"/>'),
 } as const;
 
 export type IconName = keyof typeof ICONS;
