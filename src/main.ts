@@ -7,6 +7,7 @@ import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { BeatGrids } from './audio/grids';
+import { connectDesktop, desktop } from './app/desktop';
 import { registerServiceWorker } from './app/install';
 import { animateFavicon } from './ui/favicon';
 import { planTransition } from './player/transitions';
@@ -246,9 +247,11 @@ const banner = h(
   'div',
   { class: 'banner glass', hidden: true },
   bannerText,
-  capture.supported
-    ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
-    : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen'),
+  desktop
+    ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Listen to this computer')
+    : capture.supported
+      ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
+      : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen'),
 );
 
 const dropzone = h('div', { class: 'dropzone' }, 'Drop to add to the queue');
@@ -303,9 +306,11 @@ function route() {
   if (needsCapture && track) {
     bannerText.replaceChildren(
       h('strong', { text: `${SOURCE_NAMES[track.source]} audio is protected, ` }),
-      capture.supported
-        ? 'so the visualizers listen to this tab instead. Share its audio to bring them to life.'
-        : "and this browser can't share a tab's audio, so the visualizers can listen through the microphone instead.",
+      desktop
+        ? 'so the visualizers listen to what this computer plays instead.'
+        : capture.supported
+          ? 'so the visualizers listen to this tab instead. Share its audio to bring them to life.'
+          : "and this browser can't share a tab's audio, so the visualizers can listen through the microphone instead.",
     );
   }
   welcome.hidden = player.queue.length > 0 || capture.state.active;
@@ -324,7 +329,8 @@ function maybeAutoShare() {
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (!activation?.isActive) return;
   autoShareTried = true;
-  void app.startCapture({ thisTab: true });
+  // The desktop app hears the whole computer, without a dialog.
+  void app.startCapture({ thisTab: !desktop });
 }
 
 player.on('track', (track) => {
@@ -334,6 +340,8 @@ player.on('track', (track) => {
 
 // Installable as an app; the tab icon dances while music plays.
 registerServiceWorker();
+// Inside the desktop app: the menu bar or tray visualizer, the mini player.
+connectDesktop({ player, renderer, capture });
 animateFavicon(() => renderer.audio, () => player.playing || capture.state.active);
 
 // A local file gets a beat grid worked out in the background; until it

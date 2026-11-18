@@ -12,7 +12,10 @@
     "apple-token": "node scripts/apple-music-token.mjs",
     "test-audio": "node scripts/make-test-audio.mjs",
     "verify": "node scripts/verify.cjs",
-    "test-rhythm": "node scripts/rhythm-test.mjs"
+    "test-rhythm": "node scripts/rhythm-test.mjs",
+    "desktop:web": "vite build --outDir desktop/web --emptyOutDir",
+    "desktop": "npm run desktop:web && npm --prefix desktop start",
+    "desktop:dist": "npm run desktop:web && npm --prefix desktop run dist"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

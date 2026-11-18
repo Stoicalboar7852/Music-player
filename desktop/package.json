@@ -1,0 +1,69 @@
+{
+  "name": "phosphor-desktop",
+  "productName": "Phosphor",
+  "version": "2.0.0",
+  "description": "Phosphor, a music player built around its visualizers, as a desktop app.",
+  "author": "Phosphor contributors",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never",
+    "test": "node test.mjs",
+    "smoke": "node smoke-test.mjs"
+  },
+  "devDependencies": {
+    "electron": "45.3.4",
+    "electron-builder": "26.18.0",
+    "playwright": "1.63.0"
+  },
+  "build": {
+    "appId": "app.phosphor.player",
+    "productName": "Phosphor",
+    "copyright": "Phosphor contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.mjs",
+      "server.mjs",
+      "tray-icon.mjs",
+      "preload.cjs",
+      "mini-preload.cjs",
+      "mini/**",
+      "web/**",
+      "package.json"
+    ],
+    "asar": true,
+    "mac": {
+      "category": "public.app-category.music",
+      "icon": "build/icon-mac.png",
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Phosphor can listen to a microphone or another audio input to drive its visualizers. The sound is analysed, never recorded or sent anywhere.",
+        "NSAudioCaptureUsageDescription": "Phosphor listens to what your Mac is playing to drive its visualizers. The sound is analysed, never recorded or sent anywhere."
+      }
+    },
+    "dmg": {
+      "artifactName": "Phosphor-${version}-mac-${arch}.${ext}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Phosphor-${version}-windows-${arch}-setup.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "AudioVideo",
+      "target": ["AppImage"]
+    }
+  }
+}

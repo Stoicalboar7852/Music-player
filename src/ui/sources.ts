@@ -7,6 +7,7 @@ import { captureAdvice, CaptureError } from '../audio/capture';
 import { clear, h, icon } from './dom';
 import type { IconName } from './icons';
 import { createServicePanel } from './servicePanel';
+import { desktop, desktopPlatform } from '../app/desktop';
 
 function filesPanel(app: App): HTMLElement {
   return h(
@@ -34,6 +35,17 @@ function filesPanel(app: App): HTMLElement {
       h('button', { class: 'btn', type: 'button', onClick: () => void app.playDemo() }, icon('sparkles', 18), 'Play the demo track'),
     ),
   );
+}
+
+/** Inside the desktop app there is no share dialog: the app hears the whole computer. */
+function desktopCaptureNotes(): HTMLElement[] {
+  if (desktopPlatform === 'mac') {
+    return [
+      h('p', null, 'The first time, macOS asks whether Phosphor may record the screen and system audio (System Settings, Privacy & Security, Screen & System Audio Recording). Phosphor only uses the sound; the picture is discarded at once.'),
+      h('p', { class: 'note' }, "If no sound arrives, this Mac's version of macOS doesn't let Phosphor capture system audio yet. Use an audio input device below with a loopback driver such as BlackHole, routed from your speakers."),
+    ];
+  }
+  return [h('p', null, 'Everything this computer plays drives the visualizers, including other apps. While Phosphor plays your own files, it listens to them directly instead.')];
 }
 
 function capturePanel(app: App): HTMLElement {
@@ -97,7 +109,9 @@ function capturePanel(app: App): HTMLElement {
     h(
       'p',
       null,
-      'Share audio with this page and it drives the visualizers: another tab, a streaming app, a game, anything. ',
+      desktop
+        ? 'Phosphor listens to what this computer plays and it drives the visualizers: a streaming app, a game, anything. '
+        : 'Share audio with this page and it drives the visualizers: another tab, a streaming app, a game, anything. ',
       'The captured sound is only analysed, never played back, so you will not hear it twice.',
     ),
     status,
@@ -108,13 +122,17 @@ function capturePanel(app: App): HTMLElement {
         'button',
         { class: 'btn primary', type: 'button', disabled: !capture.supported, onClick: () => void start(() => capture.startDisplay()) },
         icon('capture', 18),
-        'Capture system or tab audio',
+        desktop ? 'Listen to this computer' : 'Capture system or tab audio',
       ),
     ),
-    h('h3', { text: 'What to pick in the share dialog' }),
-    h('ol', null, advice.steps.map((s) => h('li', { text: s }))),
-    advice.note ? h('p', { class: 'note', text: advice.note }) : null,
-    h('p', null, 'The picture you share is discarded immediately; only the audio track is kept. Stop any time with the browser\'s "Stop sharing" button or the indicator at the top left.'),
+    desktop
+      ? desktopCaptureNotes()
+      : [
+          h('h3', { text: 'What to pick in the share dialog' }),
+          h('ol', null, advice.steps.map((s) => h('li', { text: s }))),
+          advice.note ? h('p', { class: 'note', text: advice.note }) : null,
+          h('p', null, 'The picture you share is discarded immediately; only the audio track is kept. Stop any time with the browser\'s "Stop sharing" button or the indicator at the top left.'),
+        ],
     h('h3', { text: 'Audio input device' }),
     h(
       'p',

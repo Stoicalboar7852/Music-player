@@ -25,8 +25,9 @@ This is the `v2` branch. The `v1` branch keeps the first version unchanged. V2 i
 - **Beat tracking that follows the drums.** The analysis now separates what is percussive from what is held (singing, chords, the bassline), finds kicks, snares and hi-hats in the percussive part, and locks onto the tempo, the beat and the bar. Local files get their beats worked out ahead of time in the background, so beats land exactly. It also follows the bassline, the vocals and leads, brightness and energy, and spots build-ups and drops. Every visualizer was rewired so big pulses come from kicks and beats, continuous motion from the bassline, colour and detail from the vocals, sparkle from the hi-hats, and scene changes from drops. A singer or a pad on its own no longer makes anything pulse. See [How the visuals follow the music](#how-the-visuals-follow-the-music).
 - **Crossfades and DJ-style mixes.** Settings, Between songs: crossfade from off to 12 seconds, with the loudness held steady, between any two sources (a local file into Spotify, YouTube into Apple Music...). Two songs on the same streaming service can't play at once, so they fade out and in. Local files can instead be mixed like a DJ would: tempo matched without changing pitch, beats and bars lined up, clashing keys kept short, in three styles (fade, blend with a bass swap, or a filter rise). See [Between songs](#between-songs-crossfades-and-mixes).
 - **Install it as an app, on a computer or a phone.** Phosphor is now an installable web app: its own window and icon, opening offline (the app and your local files; streaming needs a connection). On phones and tablets, where a page can't share another app's or tab's audio, the welcome screen and the streaming banner offer the microphone instead. While music plays, the browser tab's icon becomes a little live visualizer. See [Phones, tablets and installing](#phones-tablets-and-installing).
+- **A desktop app for macOS and Windows** (`desktop/`, Electron). It listens to the whole computer without the share dialog (Windows; macOS where it can), shows a live visualizer in the macOS menu bar or the Windows tray with a mini player under it, appears as Phosphor in Now Playing and the media keys, adds Previous/Play/Next to the Windows taskbar preview, and keeps playing when you close the window. Installers are built by GitHub Actions. See [Desktop app](#desktop-app).
 
-Still to come: the desktop app (Electron), with a live visualizer in the macOS menu bar and the Windows tray.
+Still to come: Spotify inside the desktop app (through Spotify Connect).
 
 ## Quick start
 
@@ -259,6 +260,51 @@ While music plays, the browser tab's icon becomes a tiny live visualizer (four b
 - **Apple Music and YouTube:** untested on real phones. Like any web page, Phosphor may be paused when the screen locks or you switch apps.
 
 **Native phone apps?** Not built, because they would unlock little. On iPhone and iPad, no app can capture another app's audio, except during a screen broadcast that the user starts from Control Center (ReplayKit). On Android 10 and later, an app can capture other apps' audio through `AudioPlaybackCapture`, but only from apps that allow it (allowed by default, but any app can opt out; I couldn't confirm what Spotify does). Spotify's and Apple's mobile SDKs control playback but never hand over the audio. So the one real gain would be an Android app visualizing other apps' playback. That's possible later if it proves worth it.
+
+## Desktop app
+
+`desktop/` wraps Phosphor in [Electron](https://www.electronjs.org): the same app as in the browser, plus what a web page can't do.
+
+<img src="docs/screenshots/desktop-mini.png" alt="The mini player under the menu bar or tray icon" width="320" align="right">
+
+- **A live visualizer in the macOS menu bar or the Windows tray.** Phosphor's four bars move with the bass, the mids and the treble while music plays, and rest as the logo otherwise. Click it for the **mini player**: artwork, the song, a live spectrum, Previous, Play/Pause, Next and Open Phosphor (keys: Space, ←, →, Esc). Right-click for a menu.
+- **The whole computer's sound, without the share dialog.** **System audio** (and the banner on a streaming song) listens straight away. On Windows this is the system's loopback. On macOS, Electron documents system audio as Windows-only; Phosphor also turns on Chromium's macOS system-audio features, which may work on macOS 14.2 and later, but I couldn't test that without a Mac. If no sound arrives, Phosphor says so: use **Audio input device** with a loopback driver such as BlackHole, or tab sharing in the browser. The first capture on a Mac asks for **Screen & System Audio Recording** permission; only the sound is used.
+- **Its own name and icon** in Now Playing, the media keys, the Dock and the taskbar; Previous, Play/Pause and Next buttons in the Windows taskbar preview.
+- **Closing the window keeps the music playing.** The menu bar or tray icon, the Dock or the taskbar bring it back; quit from the menu or the icon's menu.
+
+<br clear="right">
+
+**Getting it.** GitHub Actions builds the installers whenever the app changes (`.github/workflows/desktop.yml`): open the repository's **Actions** tab, then the latest **Desktop app** run, and download **Phosphor-macOS** (a `.dmg` for Apple silicon, `arm64`, and one for Intel Macs, `x64`) or **Phosphor-Windows** (a `setup.exe`). Pushing a version tag such as `v2.0.0` also attaches them to a GitHub release.
+
+The installers aren't signed with a paid certificate, so the first launch needs a click more:
+
+- **macOS** (ad-hoc signed, not notarized): open the app once; when macOS refuses, go to **System Settings → Privacy & Security** and click **Open Anyway** next to Phosphor (on macOS 14 and earlier, Control-click the app and choose **Open** instead). If macOS says the app is damaged, run `xattr -dr com.apple.quarantine /Applications/Phosphor.app` once.
+- **Windows**: on the blue "Windows protected your PC" screen, click **More info**, then **Run anyway**.
+
+Signing them properly needs an Apple Developer ID (for notarization) and a Windows code-signing certificate; electron-builder picks those up from the workflow's secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID` and so on) once they exist.
+
+**Running or building it yourself:**
+
+```bash
+npm install
+```
+
+```bash
+npm --prefix desktop install
+```
+
+```bash
+npm run desktop
+```
+
+`npm run desktop:dist` builds the installers into `desktop/release` (on a Mac for macOS, on Windows for Windows).
+
+**Streaming services in the desktop app.** The app serves Phosphor at **http://127.0.0.1:5173/**, the development server's address, so the Spotify redirect URI and Google origin you registered for the browser work unchanged. (If something else has that port, such as `npm run dev`, it uses http://127.0.0.1:5199/; close the other one first, or register that address too.) Its settings are separate from the browser's, so enter your client IDs once more.
+
+- **YouTube** plays as in the browser.
+- **Spotify** and **Apple Music**: their web players need Widevine, the DRM module Chrome includes and plain Electron doesn't (only a separately licensed Electron build has it, through a signing service). So they don't play inside the desktop app. For now, use them in the browser.
+
+**How it was tested.** I couldn't run Electron in my build environment (its download is blocked there). What was tested there: the local server and the icon drawing (`node desktop/test.mjs`), and the page side of the app in Chromium with the app's bridge stood in for (the levels and song it reports, the commands it takes, the analysis carrying on when the window is hidden, the desktop wording) plus the mini player page (`verify.cjs`, part `desktop`). The packaged app itself is smoke-tested on macOS and Windows by the workflow (`desktop/smoke-test.mjs`): the window, the local server, the bridge, the demo, the menu bar or tray icon animating, Play/Pause from it, and the mini player. A CI machine has no sound card and no screen-recording permission, so whether system audio arrives is only reported there.
 
 ## Troubleshooting
 

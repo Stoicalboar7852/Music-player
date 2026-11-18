@@ -19,6 +19,8 @@
 //   transitions  between songs: an equal-power crossfade, beat-matched mixes
 //                (tempo, beat lock, bass swap, filter rise), local into
 //                YouTube, and two YouTube songs in a row
+//   desktop      the desktop app's page side (bridge stubbed), its mini player
+//                page, and the Node tests of its server and icons
 //   pwa          builds the app and serves it (vite preview): manifest and
 //                icons, the service worker, installability, offline use, the
 //                animated tab icon, and a phone (microphone instead of capture)
@@ -43,7 +45,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,pwa,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,desktop,pwa,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -1908,6 +1910,156 @@ async function pwa() {
   }
 }
 
+// -------------------------------------------------------------------- desktop
+
+/**
+ * The desktop app's page side, in Chromium with the bridge stubbed the way
+ * desktop/preload.cjs provides it, plus the mini player page and the Node
+ * tests of the app's server and icons. (Electron itself runs in CI: see
+ * .github/workflows/desktop.yml and desktop/smoke-test.mjs.)
+ */
+async function desktopApp(browser) {
+  console.log('\n== Desktop app: the page side, the mini player, the server and icons ==');
+  const run = require('node:child_process').spawnSync(process.execPath, ['desktop/test.mjs'], { encoding: 'utf8' });
+  for (const line of (run.stdout ?? '').split('\n')) {
+    const m = /^\s*(ok|FAIL)\s+(.*?)(?:\s{2}\((.*)\))?$/.exec(line);
+    if (m) check(`desktop: ${m[2]}`, m[1] === 'ok', m[3] ?? '');
+  }
+  if (run.status !== 0 && !/FAIL/.test(run.stdout ?? '')) check('desktop: the Node tests ran', false, (run.stderr ?? '').slice(0, 300));
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  await installYouTubeMock(context);
+  await context.addInitScript(() => {
+    const sent = { states: [], levels: [] };
+    let onCommand = null;
+    window.__desktopSent = sent;
+    window.__desktopCommand = (name) => onCommand?.(name);
+    window.phosphorDesktop = {
+      platform: 'darwin',
+      sendState: (state) => sent.states.push({ ...state, at: performance.now() }),
+      sendLevels: (levels) => sent.levels.push({ ...levels, at: performance.now() }),
+      onCommand: (callback) => {
+        onCommand = callback;
+        return () => (onCommand = null);
+      },
+    };
+  });
+  const page = await open(context, 'desktop');
+  // (Software rendering here is slow; a light visualizer leaves the page time for its timers.)
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+  const look = await page.evaluate(() => ({ platform: document.documentElement.dataset.desktop, pad: getComputedStyle(document.querySelector('.topbar')).paddingLeft, drag: getComputedStyle(document.querySelector('.topbar')).getPropertyValue('-webkit-app-region') || getComputedStyle(document.querySelector('.topbar')).getPropertyValue('app-region') }));
+  check('inside the Mac app the top bar leaves room for the window buttons, and moves the window', look.platform === 'mac' && look.pad === '88px' && /drag/.test(look.drag), JSON.stringify(look));
+
+  await page.setInputFiles('#file-input', [TRACK, path.join(AUDIO, 'signal-check.flac')]);
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 1.5 && window.__phosphor.player.current?.artworkUrl, null, { timeout: 15000 });
+  await page.waitForTimeout(1200);
+  const reported = await page.evaluate(() => {
+    const { states, levels } = window.__desktopSent;
+    const last = states.at(-1);
+    const recent = levels.filter((l) => l.at > performance.now() - 1000);
+    return { last: { ...last, artwork: last?.artwork?.slice(0, 23) }, perSecond: recent.length, bands: recent.at(-1)?.bands?.length, loud: Math.max(...(recent.at(-1)?.bands ?? [0])), bass: recent.at(-1)?.bass };
+  });
+  check(
+    'the page tells the app what is playing, with the artwork as a small image the mini player can show',
+    reported.last.playing && reported.last.title.length > 0 && reported.last.source === 'local' && reported.last.artwork.startsWith('data:image/jpeg'),
+    JSON.stringify(reported.last),
+  );
+  check('...and sends the levels about twenty times a second, as 24 bands', reported.perSecond >= 15 && reported.perSecond <= 25 && reported.bands === 24 && reported.loud > 0.1, `${reported.perSecond}/s, loudest band ${reported.loud}`);
+
+  // Play/Pause, Next and Previous from the menu bar, tray, mini player or taskbar.
+  const before = await page.evaluate(() => window.__phosphor.player.currentIndex);
+  await page.evaluate(() => window.__desktopCommand('toggle'));
+  await page.waitForTimeout(300);
+  const paused = await page.evaluate(() => !window.__phosphor.player.playing && window.__desktopSent.states.at(-1).playing === false);
+  await page.evaluate(() => window.__desktopCommand('toggle'));
+  await page.waitForFunction(() => window.__phosphor.player.playing);
+  await page.evaluate(() => window.__desktopCommand('next'));
+  await page.waitForFunction((b) => window.__phosphor.player.currentIndex !== b, before, { timeout: 5000 }).catch(() => {});
+  const after = await page.evaluate(() => window.__phosphor.player.currentIndex);
+  await page.evaluate(() => window.__desktopCommand('previous'));
+  await page.waitForFunction((b) => window.__phosphor.player.currentIndex === b, before, { timeout: 5000 }).catch(() => {});
+  const back = await page.evaluate(() => window.__phosphor.player.currentIndex);
+  check('Play/Pause, Next and Previous from the app reach the player (and it reports back)', paused && after === before + 1 && back === before, `paused ${paused}, ${before} > ${after} > ${back}`);
+
+  // A hidden window gets no frames: the analysis must keep going for the tray.
+  const hidden = await page.evaluate(async () => {
+    const { renderer } = window.__phosphor;
+    window.requestAnimationFrame = () => 0;
+    cancelAnimationFrame(renderer.raf);
+    const levels = [];
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      levels.push(renderer.audio.level);
+    }
+    return { changing: new Set(levels.map((v) => v.toFixed(4))).size, sent: window.__desktopSent.levels.filter((l) => l.at > performance.now() - 1500).length };
+  });
+  check('with the window hidden (no frames) the music is still analysed and the levels still go to the app', hidden.changing >= 6 && hidden.sent >= 20, JSON.stringify(hidden));
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor);
+
+  // Streaming audio: the desktop app listens to the computer, without a dialog.
+  await page.evaluate(() => {
+    const { app, player } = window.__phosphor;
+    const yt = app.services.find((s) => s.id === 'youtube');
+    player.add([yt['videoTrack']('shortclip01')], { play: true });
+  });
+  const banner = await page
+    .waitForFunction(() => !document.querySelector('.banner').hidden, null, { timeout: 10000 })
+    .then(() => page.locator('.banner').innerText(), () => '');
+  check("a streaming song's banner offers to listen to this computer (no share dialog in the app)", /Listen to this computer/.test(banner), banner.replace(/\s+/g, ' ').slice(0, 100));
+  await page.evaluate(() => window.__phosphor.player.pause());
+  await page.evaluate(() => window.__phosphor.app.openSheet('sources', 'capture'));
+  await page.waitForTimeout(300);
+  const panel = await page.locator('.sheet').innerText();
+  check('System audio explains the Mac permission and the fallback, instead of the share dialog', /Listen to this computer/.test(panel) && /Screen & System Audio Recording/.test(panel) && !/What to pick in the share dialog/.test(panel));
+  await context.close();
+
+  // The mini player, with its bridge stubbed the way desktop/mini-preload.cjs provides it.
+  const miniContext = await browser.newContext({ viewport: { width: 320, height: 404 }, deviceScaleFactor: 2 });
+  await miniContext.addInitScript(() => {
+    const handlers = {};
+    window.__miniSent = [];
+    window.__mini = handlers;
+    window.phosphorMini = {
+      platform: 'win32',
+      command: (name) => window.__miniSent.push(name),
+      onState: (cb) => (handlers.state = cb),
+      onLevels: (cb) => (handlers.levels = cb),
+    };
+  });
+  const mini = await miniContext.newPage();
+  watch(mini, 'mini');
+  await mini.goto(`file://${path.resolve('desktop/mini/index.html')}`);
+  const cover = fs.readFileSync(path.join(AUDIO, 'cover.png')).toString('base64');
+  await mini.evaluate((cover) => {
+    window.__mini.state({ title: 'Signal Check', artist: 'Phosphor Test Signal', artwork: `data:image/png;base64,${cover}`, source: 'local', playing: true, listening: false });
+    let t = 0;
+    window.__feed = setInterval(() => {
+      t += 0.05;
+      window.__mini.levels({ bands: Array.from({ length: 24 }, (_, i) => 0.25 + 0.6 * Math.abs(Math.sin(t * 3 + i * 0.45)) * (1 - i / 40)) });
+    }, 50);
+  }, cover);
+  await mini.waitForTimeout(700);
+  const shown = await mini.evaluate(() => {
+    const c = document.getElementById('bars');
+    const data = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let lit = 0;
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 0) lit++;
+    return { title: document.getElementById('title').textContent, artist: document.getElementById('artist').textContent, lit: lit / (data.length / 4), toggle: document.getElementById('toggle').title, art: getComputedStyle(document.getElementById('art')).backgroundImage.startsWith('url("data:image/png') };
+  });
+  check('the mini player shows the song, its artwork and a live visualizer', shown.title === 'Signal Check' && shown.artist === 'Phosphor Test Signal' && shown.art && shown.lit > 0.2 && shown.toggle === 'Pause', JSON.stringify(shown));
+  await mini.screenshot({ path: path.join(SHOTS, 'desktop-mini.png') });
+  for (const id of ['previous', 'toggle', 'next', 'open']) await mini.click(`#${id}`);
+  await mini.keyboard.press('Escape');
+  const commands = await mini.evaluate(() => window.__miniSent.join());
+  check('...and its buttons and keys send Previous, Play/Pause, Next, Open Phosphor and hide', commands === 'previous,toggle,next,show,hide', commands);
+  await miniContext.close();
+}
+
 // ----------------------------------------------------------------------- main
 
 (async () => {
@@ -1923,6 +2075,7 @@ async function pwa() {
     if (only.includes('player')) await player(browser);
     if (only.includes('playlists')) await playlists(browser);
     if (only.includes('transitions')) await transitions(browser);
+    if (only.includes('desktop')) await desktopApp(browser);
   } finally {
     await browser.close();
   }

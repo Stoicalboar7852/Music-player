@@ -7,3 +7,8 @@ dist
 # Apple MusicKit private keys must never be committed
 AuthKey_*.p8
 *.p8
+
+# The desktop app's copy of the web build, its tools and its installers
+/desktop/web
+/desktop/node_modules
+/desktop/release

@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: https: http://127.0.0.1:*" />
+    <title>Phosphor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --text: #f4f4f8;
+        --dim: rgba(244, 244, 248, 0.62);
+        --line: rgba(255, 255, 255, 0.1);
+        --accent: #ff3d81;
+        --accent-2: #7a5cff;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        font: 13px/1.35 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        color: var(--text);
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      /* macOS draws the popover's frosted background; Windows gets a solid one. */
+      body {
+        background: transparent;
+      }
+      body.solid {
+        background: #0e0e16;
+      }
+      .panel {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 16px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+      }
+      .now {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        min-height: 72px;
+      }
+      .art {
+        width: 72px;
+        height: 72px;
+        flex: none;
+        border-radius: 10px;
+        background: linear-gradient(135deg, var(--accent-2), var(--accent));
+        background-size: cover;
+        background-position: center;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+      }
+      .meta {
+        min-width: 0;
+      }
+      .title {
+        font-size: 15px;
+        font-weight: 650;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .artist {
+        color: var(--dim);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .source {
+        margin-top: 4px;
+        font-size: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      canvas {
+        width: 100%;
+        height: 132px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.28);
+      }
+      .transport {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 18px;
+      }
+      button {
+        appearance: none;
+        border: 0;
+        color: var(--text);
+        background: transparent;
+        cursor: default;
+        font: inherit;
+      }
+      .round {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+      }
+      .round:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .round.big {
+        width: 52px;
+        height: 52px;
+        background: var(--text);
+        color: #0b0b12;
+      }
+      .round.big:hover {
+        background: #fff;
+      }
+      svg {
+        width: 20px;
+        height: 20px;
+        fill: currentColor;
+      }
+      .open {
+        margin-top: auto;
+        padding: 9px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.06);
+        font-weight: 600;
+      }
+      .open:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <div class="now">
+        <div class="art" id="art"></div>
+        <div class="meta">
+          <div class="title" id="title">Nothing playing</div>
+          <div class="artist" id="artist">Open Phosphor to put some music on</div>
+          <div class="source" id="source"></div>
+        </div>
+      </div>
+      <canvas id="bars" width="576" height="264" aria-label="Live visualizer"></canvas>
+      <div class="transport">
+        <button class="round" id="previous" type="button" title="Previous" aria-label="Previous">
+          <svg viewBox="0 0 16 16"><path d="M13 3 6 8l7 5zM3 3h2.5v10H3z" /></svg>
+        </button>
+        <button class="round big" id="toggle" type="button" title="Play" aria-label="Play">
+          <svg viewBox="0 0 16 16" id="toggle-icon"><path d="M5 3l8 5-8 5z" /></svg>
+        </button>
+        <button class="round" id="next" type="button" title="Next" aria-label="Next">
+          <svg viewBox="0 0 16 16"><path d="M3 3l7 5-7 5zM10.5 3H13v10h-2.5z" /></svg>
+        </button>
+      </div>
+      <button class="open" id="open" type="button">Open Phosphor</button>
+    </div>
+    <script src="mini.js"></script>
+  </body>
+</html>

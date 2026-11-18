@@ -1,0 +1,102 @@
+# Builds the desktop app (desktop/) for macOS and Windows, tests the packaged
+# app on each, and keeps the installers as downloads on the run's page.
+# Pushing a version tag (v2.0.0 ...) also attaches them to a GitHub release.
+#
+# The installers are not signed with a paid developer certificate: macOS
+# builds are ad-hoc signed and Windows builds are unsigned. See the README
+# (Desktop app) for how to open them the first time.
+
+name: Desktop app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+    branches: [v2, main]
+    paths:
+      - 'desktop/**'
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.ts'
+      - '.github/workflows/desktop.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            builder: --mac
+            app: release/mac-arm64/Phosphor.app/Contents/MacOS/Phosphor
+          - name: Windows
+            os: windows-latest
+            builder: --win
+            app: release/win-unpacked/Phosphor.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Build the web app into desktop/web
+        run: |
+          npm ci
+          npm run desktop:web
+
+      - name: Install Electron and electron-builder
+        working-directory: desktop
+        run: npm ci
+
+      - name: Test the local server and the icons
+        working-directory: desktop
+        run: npm test
+
+      - name: Build the installers
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder ${{ matrix.builder }} --publish never
+
+      - name: Smoke-test the packaged app
+        working-directory: desktop
+        run: node smoke-test.mjs "${{ matrix.app }}"
+
+      - name: Keep the installers and the smoke test's report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Phosphor-${{ matrix.name }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.exe
+            desktop/release/smoke-*
+
+      - name: Attach the installers to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            desktop/release/*.dmg
+            desktop/release/*.exe

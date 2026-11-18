@@ -192,12 +192,27 @@ export class Renderer {
     this.running = true;
     this.lastTime = performance.now();
     this.raf = requestAnimationFrame(this.tick);
+    // A hidden window or tab gets no frames. Keep the analysis going (without
+    // drawing), so the levels stay live for the tab icon and, in the desktop
+    // app, the menu bar or tray visualizer and the mini player.
+    this.listenTimer = window.setInterval(() => {
+      const now = performance.now();
+      if (!this.running || now - this.lastTime < 250) return;
+      const dt = Math.min(0.1, (now - this.lastTime) / 1000);
+      this.lastTime = now;
+      this.engine.read(this.left, this.right);
+      const position = this.analysis.hasBeatGrid && this.engine.analysisInput === 'local' ? this.engine.element.currentTime : undefined;
+      this.analysis.process(this.left, this.right, dt, position);
+    }, 100);
   }
 
   stop() {
     this.running = false;
     cancelAnimationFrame(this.raf);
+    window.clearInterval(this.listenTimer);
   }
+
+  private listenTimer = 0;
 
   get currentId(): string | null {
     return this.current?.def.id ?? null;

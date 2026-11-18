@@ -2114,3 +2114,18 @@ body.idle .yt-frame {
     }
   }
 }
+
+/* ------------------------------------------------------- the desktop app */
+
+/* macOS: the window's traffic lights sit over the top bar, which also moves the window. */
+[data-desktop='mac'] .topbar {
+  padding-left: 88px;
+  -webkit-app-region: drag;
+}
+[data-desktop='mac'] .topbar button,
+[data-desktop='mac'] .topbar a,
+[data-desktop='mac'] .topbar input,
+[data-desktop='mac'] .topbar select,
+[data-desktop='mac'] .topbar .viz-switch {
+  -webkit-app-region: no-drag;
+}
