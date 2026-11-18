@@ -115,6 +115,7 @@ function check(name, ok, detail = '') {
   results.push({ name, ok, detail });
   if (!ok) failures++;
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${name}${detail ? `  (${detail})` : ''}`);
+  if (DEBUG_LOG) fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString().slice(11, 23)} ${ok ? 'ok  ' : 'FAIL'} ${name}\n`);
 }
 
 function watch(page, label) {
@@ -131,6 +132,10 @@ function watch(page, label) {
   });
 }
 
+// PHOSPHOR_DEBUG_LOG=path records the app's own debug log ([phosphor:...]
+// lines, as with ?debug) and every check, with times, to that file.
+const DEBUG_LOG = process.env.PHOSPHOR_DEBUG_LOG;
+
 async function open(context, label = 'app') {
   if (!context.__audioRouted) {
     context.__audioRouted = true;
@@ -139,6 +144,13 @@ async function open(context, label = 'app') {
   }
   const page = await context.newPage();
   watch(page, label);
+  if (DEBUG_LOG) {
+    await page.addInitScript(() => localStorage.setItem('phosphor.debug', '1'));
+    page.on('console', (m) => {
+      const text = m.text();
+      if (text.startsWith('[phosphor:')) fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString().slice(11, 23)} [${label}] ${text}\n`);
+    });
+  }
   // Record every Web Audio connection so tests can inspect the real graph.
   await page.addInitScript(() => {
     window.__audioEdges = [];
@@ -1191,7 +1203,11 @@ async function spotify() {
     .waitForFunction(() => window.__phosphor.player.current?.title === 'Short Song 2', null, { timeout: 8000 })
     .then(() => true, () => false);
   check('a Spotify list plays in the Spotify app, and Next moves within it', skipped && mock.spotifyApp.state().context === 'spotify:playlist:37i9dQZF1DXmockHits' && mock.spotifyApp.state().track === 'spotify:track:short2', JSON.stringify(mock.spotifyApp.state().commands.slice(-3)));
-  const banner = await page.locator('.banner').innerText().catch(() => '');
+  // (An earlier step left this tab's capture on, which hides the banner.)
+  await page.evaluate(() => window.__phosphor.capture.stop());
+  const banner = await page
+    .waitForFunction(() => !document.querySelector('.banner').hidden, null, { timeout: 5000 })
+    .then(() => page.locator('.banner').innerText(), () => 'banner hidden');
   check("...and the banner asks for the computer's sound, since this tab can't hear the Spotify app", /plays in its own app/.test(banner) && /Share system audio/.test(banner), banner.replace(/\s+/g, ' ').slice(0, 110));
   await page.evaluate(() => {
     window.__phosphor.player.clear();

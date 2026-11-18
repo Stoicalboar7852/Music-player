@@ -324,28 +324,27 @@ export class ConnectPlayer implements SdkPlayer {
     return this.device;
   }
 
-  private on(extra = '') {
-    return `device_id=${encodeURIComponent(this.device)}${extra}`;
-  }
-
+  // Commands go to whichever device is playing (the account's active one), so
+  // if you move playback to your phone in the Spotify app, Phosphor's buttons
+  // follow it there. Only starting a song picks the device (see playUri).
   async pause() {
-    await this.api(`/me/player/pause?${this.on()}`, { method: 'PUT' });
+    await this.api('/me/player/pause', { method: 'PUT' });
     this.followSoon();
   }
   async resume() {
-    await this.api(`/me/player/play?${this.on()}`, { method: 'PUT' });
+    await this.api('/me/player/play', { method: 'PUT' });
     this.followSoon();
   }
   async seek(ms: number) {
-    await this.api(`/me/player/seek?${this.on(`&position_ms=${Math.max(0, Math.round(ms))}`)}`, { method: 'PUT' });
+    await this.api(`/me/player/seek?position_ms=${Math.max(0, Math.round(ms))}`, { method: 'PUT' });
     this.followSoon();
   }
   async nextTrack() {
-    await this.api(`/me/player/next?${this.on()}`, { method: 'POST' });
+    await this.api('/me/player/next', { method: 'POST' });
     this.followSoon();
   }
   async previousTrack() {
-    await this.api(`/me/player/previous?${this.on()}`, { method: 'POST' });
+    await this.api('/me/player/previous', { method: 'POST' });
     this.followSoon();
   }
 
@@ -365,7 +364,7 @@ export class ConnectPlayer implements SdkPlayer {
       this.volumeTimer = 0;
       if (this.volumeWanted === this.volumeSent || !this.device) return;
       this.volumeSent = this.volumeWanted;
-      void this.api(`/me/player/volume?${this.on(`&volume_percent=${this.volumeSent}`)}`, { method: 'PUT' }).catch(() => {});
+      void this.api(`/me/player/volume?volume_percent=${this.volumeSent}`, { method: 'PUT' }).catch(() => {});
       this.volumeTimer = window.setTimeout(send, 300);
     };
     send();
