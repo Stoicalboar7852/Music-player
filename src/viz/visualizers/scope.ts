@@ -3,7 +3,7 @@
 // moment after the beam has passed.
 
 import { WAVE_SIZE } from '../../audio/analysis';
-import { COMMON_UNIFORMS, FS_HEADER } from '../../gl/glsl';
+import { COMMON_UNIFORMS, FS_HEADER, RHYTHM } from '../../gl/glsl';
 import { bindTexture, drawFullscreen, FULLSCREEN_VS, PingPong, Program } from '../../gl/util';
 import { bindOutput, commonUniforms, defineVisualizer, UNIT_WAVE } from '../types';
 
@@ -60,6 +60,7 @@ void main() {
 const SCREEN_FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform sampler2D uPhosphor;
 
 void main() {
@@ -89,7 +90,7 @@ void main() {
   float grid = 1.0 - min(min(gd.x, gd.y), 1.0);
   vec2 td = abs(fract(gridUv * 5.0 + 0.5) - 0.5) / fwidth(gridUv * 5.0);
   float ticks = (1.0 - min(td.x, 1.0)) * step(abs(gridUv.y), 0.09) + (1.0 - min(td.y, 1.0)) * step(abs(gridUv.x), 0.09);
-  col += vec3(0.10, 0.34, 0.24) * (grid * 0.8 + ticks * 0.9) * (0.7 + 0.6 * uBeat);
+  col += vec3(0.10, 0.34, 0.24) * (grid * 0.8 + ticks * 0.9) * (0.7 + 0.6 * pulse());
 
   // Tube: faint green wash, scanlines, vignette.
   col += vec3(0.004, 0.02, 0.012) * (1.0 + 2.0 * uLevel);
@@ -130,13 +131,13 @@ export default defineVisualizer({
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE);
         gl.bindVertexArray(vao);
-        const thickness = Math.max(2, height / 330) * (1 + 0.9 * a.bass + 0.8 * a.beatPulse);
+        const thickness = Math.max(2, height / 330) * (1 + 0.9 * Math.max(a.bassline, a.bass * 0.5) + 0.8 * Math.max(a.kick, a.beatPulse * 0.85));
         beam.use().set({
           uWave: UNIT_WAVE,
           uRes: [width, height],
           uGain: 0.34 + 0.1 * a.level,
           uWidth: thickness,
-          uPower: 1.5 + 1.2 * a.beatPulse + 0.5 * a.trebleHit,
+          uPower: 1.5 + 1.2 * Math.max(a.kick, a.beatPulse * 0.85) + 0.5 * Math.max(a.hat, a.trebleHit * 0.5),
         });
         beam.set({ uChannel: 1, uOffset: 0.46 });
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, WAVE_SIZE * 2);

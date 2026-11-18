@@ -50,28 +50,50 @@ export function synthesizeDemo(sampleRate = 44100): DemoAudio {
       return Math.sin(phase) * Math.exp(-t * 7.5) * 0.95 + (t < 0.004 ? noise() * 0.3 : 0);
     });
 
+  // Two-pole filters (RBJ cookbook), each call making a fresh filter state.
+  const biquad = (b0: number, b1: number, b2: number, a0: number, a1: number, a2: number) => {
+    let x1 = 0;
+    let x2 = 0;
+    let y1 = 0;
+    let y2 = 0;
+    return (x: number) => {
+      const y = (b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+      x2 = x1;
+      x1 = x;
+      y2 = y1;
+      y1 = y;
+      return y;
+    };
+  };
+  const bandpass = (f: number, q: number) => {
+    const w = (TAU * f) / SR;
+    const alpha = Math.sin(w) / (2 * q);
+    return biquad(alpha, 0, -alpha, 1 + alpha, -2 * Math.cos(w), 1 - alpha);
+  };
+  const highpass = (f: number) => {
+    const w = (TAU * f) / SR;
+    const alpha = Math.sin(w) / (2 * Math.SQRT1_2);
+    const c = Math.cos(w);
+    return biquad((1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + alpha, -2 * c, 1 - alpha);
+  };
+
+  // A pitched body around 170 Hz with a band of noise centred near 2 kHz (the crack) and some sizzle.
   const snare = (at: number) => {
-    let lp = 0;
+    const crack = bandpass(2000, 0.6);
+    const sizzle = highpass(5000);
     add(at, 0.28, (t) => {
       const n = noise();
-      lp += (n - lp) * 0.35;
-      return ((n - lp) * 0.55 + Math.sin(TAU * 190 * t) * 0.35 * Math.exp(-t * 30)) * Math.exp(-t * 16);
+      const body = Math.sin(TAU * (160 * t + (25 / 30) * (1 - Math.exp(-30 * t)))) * Math.exp(-t * 22) * 0.5;
+      const noisy = (crack(n) * 1.2 + sizzle(n) * 0.3) * Math.exp(-t * 17);
+      return (body + noisy) * Math.min(1, t / 0.002) * 0.62;
     });
   };
 
+  // Noise above about 7 kHz.
   const hat = (at: number, gain: number, pan: number) => {
-    let prev = 0;
-    add(
-      at,
-      0.09,
-      (t) => {
-        const n = noise();
-        const hp = n - prev;
-        prev = n;
-        return hp * Math.exp(-t * 70) * gain;
-      },
-      pan,
-    );
+    const hp1 = highpass(7000);
+    const hp2 = highpass(7000);
+    add(at, 0.09, (t) => hp2(hp1(noise())) * Math.exp(-t * 70) * gain * 1.6, pan);
   };
 
   const bass = (at: number, note: number, length: number) => {

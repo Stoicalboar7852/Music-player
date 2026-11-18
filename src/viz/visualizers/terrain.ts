@@ -2,7 +2,7 @@
 // The newest sound rises at your feet and rolls away toward the horizon.
 
 import { BloomScene } from '../../gl/bloom';
-import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, NOISE, PALETTE } from '../../gl/glsl';
+import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, NOISE, PALETTE, RHYTHM } from '../../gl/glsl';
 import { lookAt, multiply, perspective } from '../../gl/mat4';
 import { drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { commonUniforms, defineVisualizer, HISTORY_ROWS } from '../types';
@@ -19,6 +19,7 @@ uniform sampler2D uHistory;
 uniform float uHistHead;
 uniform mat4 uViewProj;
 uniform float uBass;
+uniform float uBassline;
 out float vHeight;
 out vec2 vGrid;
 out float vRow;
@@ -42,7 +43,8 @@ void main() {
   float hz = heightAt(aGrid + vec2(0.0, e.y)) - heightAt(aGrid - vec2(0.0, e.y));
   vNormal = normalize(vec3(-hx * SIZE.y / (4.0 * e.x * SIZE.x), 1.0, hz * SIZE.y / (2.0 * e.y * SIZE.z)));
   // The near edge sits behind the camera so the mesh never shows its rim.
-  vec3 world = vec3(aGrid.x * SIZE.x, h * SIZE.y * (1.0 + 0.25 * uBass), 2.6 - aGrid.y * SIZE.z);
+  // The bassline lifts the land; kicks are already in the spectrum it is made of.
+  vec3 world = vec3(aGrid.x * SIZE.x, h * SIZE.y * (1.0 + 0.25 * max(uBassline, uBass * 0.5)), 2.6 - aGrid.y * SIZE.z);
   vHeight = h;
   vGrid = aGrid;
   // Row number in data space, so grid lines travel with the sound.
@@ -55,6 +57,7 @@ const TERRAIN_FS = /* glsl */ `${FS_HEADER}
 in float vHeight; in vec2 vGrid; in float vRow; in vec3 vWorld; in vec3 vNormal;
 out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform vec3 uEye;
 ${COLOR}
 ${PALETTE}
@@ -79,7 +82,7 @@ void main() {
   vec3 lineColor = pal(0.3 + h * 0.5);
   // Treble runs along the wires as a fine shimmer.
   float shimmer = 0.5 + 0.5 * sin(vRow * 1.7 + vGrid.x * 40.0 - uTime * 9.0);
-  col += lineColor * lines * (0.22 + 2.2 * h + 0.9 * uBeat * (1.0 - vGrid.y) + 1.3 * uTreble * shimmer);
+  col += lineColor * lines * (0.22 + 2.2 * h + 0.9 * pulse() * (1.0 - vGrid.y) + 1.3 * max(uTreble * 0.7, sparkle()) * shimmer);
 
   // Peaks catch the treble as glints.
   col += vec3(1.0) * pow(h, 5.0) * (0.10 + 0.9 * uTreble);
@@ -87,7 +90,7 @@ void main() {
   // Fade into the horizon glow.
   float dist = length(vWorld - uEye);
   float fog = 1.0 - exp(-dist * 0.085);
-  vec3 horizon = mix(pal(0.0), pal(0.25), 0.5) * (0.22 + 0.5 * uBass);
+  vec3 horizon = mix(pal(0.0), pal(0.25 + 0.2 * colourDrive()), 0.5) * (0.22 + 0.5 * lowDrive());
   col = mix(col, horizon, fog * fog);
   o = vec4(col, 1.0);
 }`;
@@ -95,6 +98,7 @@ void main() {
 const SKY_FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform float uHorizon;      // screen-space y of the horizon, 0..1
 ${HASH}
 ${NOISE}
@@ -108,17 +112,17 @@ void main() {
 
   // Sky: palette glow at the horizon falling off to near-black.
   vec3 glow = mix(pal(0.0), pal(0.25), 0.5);
-  vec3 col = glow * (0.20 + 0.45 * uBass) * exp(-up * 6.5);
+  vec3 col = glow * (0.20 + 0.45 * lowDrive()) * exp(-up * 6.5);
   col += pal(0.5) * 0.05 * exp(-up * 1.8);
 
   // Sun: a banded disc sitting on the horizon, swelling with the bass.
-  float radius = 0.17 + 0.03 * uBass + 0.035 * uBeat;
+  float radius = 0.17 + 0.03 * lowDrive() + 0.035 * pulse();
   float d = length(p - vec2(0.0, 0.085));
   float disc = smoothstep(radius, radius - 0.004, d);
   float bands = smoothstep(0.0, 0.012, abs(fract(p.y * 26.0 - uTime * 0.25) - 0.5) - 0.5 * smoothstep(0.24, 0.0, p.y));
-  vec3 sun = mix(pal(0.25), pal(0.0), smoothstep(0.0, 0.26, p.y)) * (1.3 + 1.2 * uBeat);
+  vec3 sun = mix(pal(0.25), pal(0.0), smoothstep(0.0, 0.26, p.y)) * (1.3 + 1.2 * pulse());
   col += sun * disc * mix(1.0, bands, step(p.y, 0.24)) * step(0.0, p.y);
-  col += glow * 0.35 * exp(-d * 5.0) * (0.6 + 0.9 * uBass);
+  col += glow * 0.35 * exp(-d * 5.0) * (0.6 + 0.9 * lowDrive());
 
   // Aurora: curtains of light high in the sky that flare with the treble.
   float sway = fbm(vec2(p.x * 1.6 + uTime * 0.05, uTime * 0.11));
@@ -126,17 +130,17 @@ void main() {
   float band = smoothstep(0.18, 0.34, up) * smoothstep(0.75, 0.42, up + 0.25 * (sway - 0.5));
   float rays = 0.55 + 0.45 * sin(p.x * 70.0 + sway * 30.0);
   vec3 aurora = mix(pal(0.5), pal(0.75), curtain) * pow(curtain, 2.0) * band * rays;
-  col += aurora * (0.10 + 2.4 * uTreble + 1.6 * uTrebleHit);
+  col += aurora * (0.10 + 1.6 * uTreble + 1.2 * colourDrive() + 1.6 * sparkle());
 
   // Stars that twinkle with the treble.
   vec2 sg = vUv * vec2(aspect, 1.0) * 70.0;
   vec2 sid = floor(sg);
   float star = step(0.985, hash21(sid)) * smoothstep(0.35, 0.0, length(fract(sg) - 0.5));
-  float twinkle = 0.35 + 0.65 * sin(uTime * 2.0 + hash21(sid + 3.0) * 40.0) * uTreble + 0.8 * uTrebleHit;
+  float twinkle = 0.35 + 0.65 * sin(uTime * 2.0 + hash21(sid + 3.0) * 40.0) * uTreble + 0.8 * sparkle();
   col += vec3(0.85, 0.9, 1.0) * star * max(twinkle, 0.15) * smoothstep(0.05, 0.4, up) * (1.0 - disc);
 
   // Below the horizon: the same haze the terrain fades into, so they meet seamlessly.
-  vec3 ground = glow * (0.22 + 0.5 * uBass) * exp(p.y * 5.0);
+  vec3 ground = glow * (0.22 + 0.5 * lowDrive()) * exp(p.y * 5.0);
   col = mix(ground, col, step(0.0, p.y));
   o = vec4(col, 1.0);
 }`;
@@ -202,7 +206,7 @@ export default defineVisualizer({
         const t = frame.time;
         const eye: [number, number, number] = [
           Math.sin(t * 0.17) * 0.55,
-          1.85 + 0.12 * Math.sin(t * 0.23) + 0.1 * a.bass,
+          1.85 + 0.12 * Math.sin(t * 0.23) + 0.1 * Math.max(a.bassline, a.bass * 0.5),
           1.9,
         ];
         const target: [number, number, number] = [Math.sin(t * 0.11) * 0.3, 0.7, -6];

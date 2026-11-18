@@ -5,6 +5,7 @@
 // up by scaling the internal resolution.
 
 import { Analysis, BANDS, FFT_SIZE, WAVE_SIZE, type AudioFrame } from '../audio/analysis';
+import type { BeatGrid } from '../audio/rhythm';
 import type { AudioEngine } from '../audio/engine';
 import { FS_HEADER } from '../gl/glsl';
 import {
@@ -204,6 +205,11 @@ export class Renderer {
 
   get currentDef(): VisualizerDef | null {
     return this.current?.def ?? null;
+  }
+
+  /** Beats and bars worked out ahead of time for the playing file; null to track live. */
+  setBeatGrid(grid: BeatGrid | null) {
+    this.analysis.setBeatGrid(grid);
   }
 
   /** The most recent analysis frame, for UI that wants to react to audio. */
@@ -434,7 +440,9 @@ export class Renderer {
     this.ensureSize();
 
     this.engine.read(this.left, this.right);
-    const audio = this.analysis.process(this.left, this.right, dt);
+    // With a beat grid for the playing file, beats follow its playback position exactly.
+    const position = this.analysis.hasBeatGrid && this.engine.analysisInput === 'local' ? this.engine.element.currentTime : undefined;
+    const audio = this.analysis.process(this.left, this.right, dt, position);
 
     if (this.cycleEnabled && this.fade >= 1 && audio.presence > 0.2) {
       this.cycleElapsed += dt;
@@ -611,10 +619,17 @@ export class Renderer {
       fill(time, analysis.rate, left, right);
       audio = analysis.process(left, right, dt);
       if (opts.suppressBeats) {
-        // Same sound, but the visualizer is never told a beat happened.
+        // Same sound, but the visualizer is never told a beat (or a kick, or a drop) happened.
         audio.beat = false;
         audio.beatPulse = 0;
         audio.beatCount = 0;
+        audio.kick = 0;
+        audio.kickHit = false;
+        audio.snare = 0;
+        audio.snareHit = false;
+        audio.beatPhase = 0;
+        audio.downbeat = false;
+        audio.dropPulse = 0;
       }
       this.draw(audio, analysis, dt, time, target.fbo, width, height);
       if (i === frames - 13) earlier = read();

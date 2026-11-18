@@ -127,9 +127,10 @@ export default defineVisualizer({
         const dt = frame.dt;
         const f = dt * 60; // amounts below are tuned per 60Hz frame
 
-        if (a.beat && a.beatCount % 8 === 0) swirlDir = -swirlDir;
-        swirl += (swirlDir * (0.012 + 0.05 * a.mid) - swirl) * Math.min(1, dt * 2.5);
-        hue = (hue + dt * (0.05 + 0.18 * a.treble)) % 1;
+        if (a.drop || (a.beat && a.beatCount % 8 === 0)) swirlDir = -swirlDir;
+        swirl += (swirlDir * (0.012 + 0.03 * a.mid + 0.03 * a.vocals) - swirl) * Math.min(1, dt * 2.5);
+        // Colour drifts with the vocals and leads.
+        hue = (hue + dt * (0.05 + 0.08 * a.treble + 0.16 * a.vocals)) % 1;
         spin += dt * (0.25 + 1.4 * a.mid) * swirlDir;
 
         // Five comets orbit at different radii, lowest frequencies innermost.
@@ -153,12 +154,12 @@ export default defineVisualizer({
           uPrev: 0,
           uRes: [frame.width, frame.height],
           uTime: frame.time,
-          uZoom: 1 - (0.008 + 0.022 * a.bass + 0.05 * a.beatPulse) * f,
+          uZoom: 1 - (0.008 + 0.022 * Math.max(a.bassline, a.bass * 0.5) + 0.05 * Math.max(a.kick, a.beatPulse * 0.85)) * f,
           uTwist: 0.004 * swirlDir * f,
           uSwirl: swirl * f,
           uDecay: Math.pow(0.968, f),
           uHueShift: (0.018 + 0.03 * a.treble) * f,
-          uWobble: 0.0012 * (1 + 3 * a.midHit),
+          uWobble: 0.0012 * (1 + 3 * Math.max(a.snare, a.midHit * 0.6)),
           uComets: comets,
         });
         bindTexture(gl, 0, buffer.read.tex);
@@ -169,13 +170,13 @@ export default defineVisualizer({
         gl.blendFunc(gl.ONE, gl.ONE);
         gl.bindVertexArray(vao);
         const width = Math.max(1.5, frame.height / 380);
-        const power = (0.2 + 0.3 * a.level + 0.45 * a.beatPulse) * Math.min(2, f);
+        const power = (0.2 + 0.3 * a.level + 0.45 * Math.max(a.kick, a.beatPulse * 0.85)) * Math.min(2, f);
         shape.use().set({ uWave: UNIT_WAVE, uRes: [frame.width, frame.height] });
         shape.set({
           uChannel: 0,
-          uRadius: 0.36 + 0.1 * a.bass + 0.08 * a.beatPulse,
+          uRadius: 0.36 + 0.1 * Math.max(a.bassline, a.bass * 0.5) + 0.08 * Math.max(a.kick, a.beatPulse * 0.85),
           uAmp: 0.08 + 0.14 * a.level,
-          uWidth: width * (1.1 + 1.2 * a.beatPulse),
+          uWidth: width * (1.1 + 1.2 * Math.max(a.kick, a.beatPulse * 0.85)),
           uSpin: spin,
           uHue: hue,
           uPower: power,
@@ -183,7 +184,7 @@ export default defineVisualizer({
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, WAVE_SIZE * 2);
         shape.set({
           uChannel: 1,
-          uRadius: 0.3 + 0.1 * a.bass + 0.08 * a.beatPulse,
+          uRadius: 0.3 + 0.1 * Math.max(a.bassline, a.bass * 0.5) + 0.08 * Math.max(a.kick, a.beatPulse * 0.85),
           uAmp: 0.06 + 0.12 * a.level,
           uWidth: width,
           uSpin: -spin * 0.7 + 1.7,

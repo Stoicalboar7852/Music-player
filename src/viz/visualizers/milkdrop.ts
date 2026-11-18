@@ -153,8 +153,8 @@ export default defineVisualizer({
             right[i] = 128 + a.waveR[i] * 110;
           }
           presetAge += frame.dt;
-          // Change preset on a beat once the current one has had its time.
-          if (presetAge > PRESET_SECONDS && (a.beat || presetAge > PRESET_SECONDS + 4)) load(index + 1, BLEND_SECONDS);
+          // Change preset on a drop (scene change), or on a beat once the current one has had its time.
+          if ((a.drop && presetAge > 8) || (presetAge > PRESET_SECONDS && (a.beat || presetAge > PRESET_SECONDS + 4))) load(index + 1, BLEND_SECONDS);
           engine.render({
             audioLevels: { timeByteArray: mono, timeByteArrayL: left, timeByteArrayR: right },
             elapsedTime: frame.dt,

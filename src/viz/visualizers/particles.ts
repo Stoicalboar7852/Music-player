@@ -202,7 +202,8 @@ export default defineVisualizer({
         const a = frame.audio;
         const dt = Math.min(frame.dt, 1 / 24);
 
-        if (a.beat && a.beatCount % 16 === 0 && morph >= 1) {
+        // A new shape on a drop, or every 32 beats when there are none.
+        if ((a.drop || (a.beat && a.beatCount % 32 === 0)) && morph >= 1) {
           shapeA = shapeB;
           shapeB = (shapeB + 1) % SHAPES;
           morph = 0;
@@ -216,10 +217,10 @@ export default defineVisualizer({
         update.use().set({
           uDt: dt,
           uTime: frame.time,
-          uBass: a.bass,
-          uMid: a.mid,
+          uBass: Math.max(a.bassline, a.bass * 0.5),
+          uMid: a.mid * 0.5 + a.vocals * 0.6,
           uTreble: a.treble,
-          uKick: a.beat ? 1 : 0,
+          uKick: a.kickHit || a.beat ? 1 : 0,
           uShapeA: shapeA,
           uShapeB: shapeB,
           uMorph: eased,
@@ -235,8 +236,8 @@ export default defineVisualizer({
         read = 1 - read;
 
         // ---- draw
-        orbit += dt * (0.12 + 0.5 * a.mid);
-        const dist = 3.5 - 0.3 * a.bass;
+        orbit += dt * (0.12 + 0.3 * a.mid + 0.3 * a.vocals);
+        const dist = 3.5 - 0.3 * Math.max(a.bassline, a.bass * 0.5);
         const eye: [number, number, number] = [
           Math.sin(orbit) * dist,
           0.9 + 0.5 * Math.sin(frame.time * 0.19),
@@ -255,8 +256,8 @@ export default defineVisualizer({
           uPointScale: scene.height * 0.011,
           uTime: frame.time,
           uTreble: a.treble,
-          uTrebleHit: a.trebleHit,
-          uBeat: a.beatPulse,
+          uTrebleHit: Math.max(a.hat, a.trebleHit * 0.5),
+          uBeat: Math.max(a.kick, a.beatPulse * 0.85),
           uFocus: dist,
           // Fewer particles each carry more light, so the look holds across quality levels.
           uExposure: (0.55 * 240000) / count,

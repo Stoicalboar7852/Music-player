@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "apple-token": "node scripts/apple-music-token.mjs",
     "test-audio": "node scripts/make-test-audio.mjs",
-    "verify": "node scripts/verify.cjs"
+    "verify": "node scripts/verify.cjs",
+    "test-rhythm": "node scripts/rhythm-test.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

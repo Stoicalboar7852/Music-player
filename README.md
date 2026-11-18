@@ -21,7 +21,9 @@ This is the `v2` branch. The `v1` branch keeps the first version unchanged. V2 i
 - **Phosphor playlists** (<kbd>B</kbd>, or the library button). Mix songs from every source in one playlist; link a Spotify, Apple Music or YouTube playlist so it's fetched fresh each time it plays; put playlists inside playlists (loops are refused); play in order, shuffled, or alternating between sources; export and import as JSON. Local files are reopened from disk after a restart, where Chrome allows it.
 - **Browse each service.** Each service's tab in **Add music** opens on a home view built from what its API offers for your account, with album and playlist pages, and a heart to save to your library. See [Streaming services](#streaming-services) for what each one can and can't show.
 
-Still to come: better beat tracking, more visualizers, crossfade and mix transitions, and desktop and phone apps.
+- **Beat tracking that follows the drums.** The analysis now separates what is percussive from what is held (singing, chords, the bassline), finds kicks, snares and hi-hats in the percussive part, and locks onto the tempo, the beat and the bar. Local files get their beats worked out ahead of time in the background, so beats land exactly. It also follows the bassline, the vocals and leads, brightness and energy, and spots build-ups and drops. Every visualizer was rewired so big pulses come from kicks and beats, continuous motion from the bassline, colour and detail from the vocals, sparkle from the hi-hats, and scene changes from drops. A singer or a pad on its own no longer makes anything pulse. See [How the visuals follow the music](#how-the-visuals-follow-the-music).
+
+Still to come: more visualizers, crossfade and mix transitions, and desktop and phone apps.
 
 ## Quick start
 
@@ -74,19 +76,19 @@ Settings, the last visualizer, volume, shuffle and repeat are remembered in the 
 
 ## Visualizers
 
-| | Visualizer | Bass | Mids | Treble | Beats |
+| | Visualizer | Bassline and low end | Vocals and mids | Hi-hats and treble | Kicks, beats and drops |
 | --- | --- | --- | --- | --- | --- |
 | 1 | **Spectrum** – LED bars with gravity-driven peak caps and a floor reflection | left-hand bars, floor glow | middle bars | right-hand bars | bars and floor flare |
 | 2 | **Oscilloscope** – left and right waveforms as a beam on a phosphor tube | beam thickens | waveform shape | beam brightens on hits | beam and graticule flash |
-| 3 | **Feedback Trails** – waveform rings leave swirling, colour-cycling trails | outward zoom | swirl strength and spin | hue rotation speed, comets | zoom kick; every 8 beats the swirl reverses |
+| 3 | **Feedback Trails** – waveform rings leave swirling, colour-cycling trails | outward zoom | swirl strength and spin | hue rotation speed, comets | zoom kick; the swirl reverses every 8 beats and on drops |
 | 4 | **Tunnel** – tiled demoscene tunnel; past sound flies toward you as lit tiles | glow at the far end | bend and roll | neon tubes fizz | walls lurch, steel ribs flash |
-| 5 | **Kaleidoscope** – mirrored stained glass, each shard tied to one frequency | zoom | spin and tumble | bevel glints, sparkles | flash; every 16 beats the mirror count changes |
-| 6 | **MilkDrop** – genuine MilkDrop presets via butterchurn, a curated set of 24 | per preset | per preset | per preset | preset changes on a beat every ~30 s |
-| 7 | **Particle Field** – ~190,000 GPU particles forming shapes | shape swells | flow-field turbulence, orbit speed | glitter flashes | explosion outward; every 16 beats a new shape |
+| 5 | **Kaleidoscope** – mirrored stained glass, each shard tied to one frequency | zoom | spin and tumble | bevel glints, sparkles | flash; the pattern changes on a drop (or every 32 beats) |
+| 6 | **MilkDrop** – genuine MilkDrop presets via butterchurn, a curated set of 24 | per preset | per preset | per preset | preset changes on a drop, or on a beat every ~30 s |
+| 7 | **Particle Field** – ~190,000 GPU particles forming shapes | shape swells | flow-field turbulence, orbit speed | glitter flashes | explosion outward on kicks; a new shape on a drop (or every 32 beats) |
 | 8 | **Pulse Orb** – raymarched liquid-metal sphere | swell and wobble | regions of skin bulge with their band | skin roughens, sparks | shockwave ring |
-| 9 | **Lattice Flight** – raymarched flight through a grid of cubes, one band each | flight speed | roll | edges spark | light wave races down the corridor |
+| 9 | **Lattice Flight** – raymarched flight through a grid of cubes, one band each | flight speed | roll | edges spark | light wave races down the corridor; the roll turns on a drop |
 | 0 | **Frequency Terrain** – a landscape built from the last few seconds of spectrum | height, sun size, horizon glow | ridges | aurora, wire shimmer, stars | sun pulse, grid flash |
-| | **Fluid** – Navier–Stokes ink simulation | fountain from the bottom | jets from the sides | circling nozzles, finer swirls | ink bursts |
+| | **Fluid** – Navier–Stokes ink simulation | fountain from the bottom | jets from the sides | circling nozzles, finer swirls | ink bursts; a drop blasts from the centre |
 | | **Album Halo** – cover art ringed by a radial spectrum and waveform halo | disc swells, rim light | spectrum bars | sparks | ripples leave the disc |
 
 The modern family (and Album Halo's disc) take their colours from the current track's artwork; the interface accent colour follows it too. With no artwork, Album Halo shows a spinning record instead.
@@ -144,10 +146,41 @@ Every visualizer receives the same analysis each frame (`frame.audio` in TypeScr
 - `spectrum`: 128 log-spaced bands from 32 Hz to 16 kHz, 0..1, auto-gained with a treble tilt so quiet captures and loud masters both fill the range; also uploaded as the `uSpectrum` texture, plus a 256-row scrolling history texture (`uHistory`).
 - `waveform`, `waveL`, `waveR`: 1024 trigger-aligned samples, gain-normalised (`uWave`).
 - `bass`, `mid`, `treble`, `level`: smoothed band energies; `bassHit`, `midHit`, `trebleHit`: transient emphasis.
-- `beat` (true on the beat frame), `beatPulse` (1 decaying to 0), `beatCount`: adaptive spectral-flux beat detection gated on low-frequency energy.
+- `beat` (true on the beat frame), `beatPulse` (1 decaying to 0), `beatCount`, `beatPhase` (0..1 through the beat), `barPhase`, `beatInBar`, `downbeat`, `bpm`, `tempoConfidence`: the tracked beat (see below).
+- `kick`, `snare`, `hat` (1 on a hit, decaying) and `kickHit`, `snareHit`, `hatHit` (true on the frame): drum onsets.
+- `bassline`, `vocals`, `brightness`, `energy`: continuous, from the held (harmonic) part of the sound.
+- `build` (tension of a build-up), `drop` (true on the frame a drop lands), `dropPulse`, `dropCount`.
 - `palette`: four colours from the current artwork (`uPal`), and the artwork itself (`uArtwork`).
 
+In GLSL these are uniforms (`uKick`, `uSnare`, `uHat`, `uBassline`, `uVocals`, `uBright`, `uEnergy`, `uBeatPhase`, `uBarPhase`, `uBuild`, `uDrop`, `uDropCount`, alongside `uBass`, `uBeat` and the rest). Include `RHYTHM` from `src/gl/glsl.ts` to get the same mapping the built-in visualizers use: `pulse()` for big hits (kick or beat), `lowDrive()` for continuous low-end motion (the bassline), `colourDrive()` for colour and detail (vocals and leads), `sparkle()` for glints (hi-hats) and `onBeat(w)`. Change scenes when `frame.audio.drop` is true.
+
 `src/gl` has the small WebGL2 toolkit the built-in ones use (programs with named uniforms, render targets, ping-pong buffers, bloom).
+
+## How the visuals follow the music
+
+Each frame, the analysis (`src/audio/rhythm.ts`) works out more than how loud each band is:
+
+- **What is a hit and what is held.** A median-filter separation (made causal, so it adds no delay) splits each frame's spectrum into a percussive part (broadband, sudden) and a harmonic part (steady partials). Drums come from the first, the bassline and vocals from the second, so a singer or a held chord can't fire a beat.
+- **Kicks, snares and hi-hats.** A kick is a rise of percussive energy below 150 Hz with little above it (a bass note brings its overtones along); a snare is noise across 1-5 kHz with a body, loud next to the kick (a beater click isn't); a hi-hat is noise above 7 kHz.
+- **Tempo, beat and bar.** Kicks and snares (snares counting double, since they almost always fall on a beat) build an onset curve; its autocorrelation gives the tempo (preferring 90-180 BPM), a comb template gives where the beats fall, and a phase-locked loop keeps them on time, carrying the beat through a breakdown. Bars start where the chords change (12-tone chroma compared two beats either side), with a kick rather than a backbeat snare.
+- **Ahead of time, for local files.** While a file plays, a worker decodes and analyses the whole thing (`src/audio/beatgrid.ts`, dynamic-programming beat tracking after Ellis 2007). When the grid arrives, beats and bars follow the playback position exactly. Files without drums get no grid.
+- **Bassline, vocals, brightness, energy.** Harmonic energy at 35-160 Hz, harmonic energy at 300 Hz-3.5 kHz, the spectral centroid, and loudness against the loudest recent part of the track.
+- **Builds and drops.** A build is more snares and hats, a brighter sound, and less low end. A drop is the first kick after the low end has been gone for a couple of seconds.
+
+The ground-truth tests (`npm run test-rhythm`, also part of `npm run verify`) run the real analysis frame by frame, at about 60 frames a second with uneven frame times, over synthesised music with exactly known beats. Current results:
+
+| Signal | Live beats (F, ±70 ms) | Grid beats | Other |
+| --- | --- | --- | --- |
+| Four-on-the-floor, 105, 120 BPM | 1.00 | 0.99-1.00 | |
+| Backbeat with an off-beat kick, 95 BPM | 1.00 | 1.00 | |
+| Four-on-the-floor with a singer over it, 128 BPM | 1.00 | 1.00 | |
+| 140 BPM with a four-bar breakdown | 1.00 | | drop found within 20 ms; downbeats 0.97 |
+| The demo track (intro, build, breakdown, return) | 1.00 | 0.99 | drop found within 10 ms; grid downbeats 1.00 |
+| A singer alone; held chords alone | no beats | no grid | no kicks or snares |
+
+Across the loops, kicks score 0.86 precision / 0.83 recall and snares 0.93 / 0.80 (±50 ms).
+
+What these can't promise: the test music is synthesised, so real recordings will score lower, and how much lower is untested here. Known weak spots: downbeats under a prominent melody that wanders off the chords; very slow or very fast songs may be tracked at double or half tempo (the visuals then pulse on eighth notes or every other beat); the live tracker takes a few seconds to lock at the start of a song. Streaming services and captured audio can only be tracked live: their audio can't be decoded ahead of time.
 
 ## System audio
 

@@ -37,7 +37,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'visualizers,reaction,player,playlists,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -499,6 +499,34 @@ async function player(browser) {
   await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.5, null, { timeout: 20000 }).catch(() => {});
   s = await state(page);
   check('the built-in demo track synthesises and plays', s.playing && s.queue[0]?.title === 'Signal Check' && s.queue[0].art);
+
+  // ---- beat analysis in the app: a local file gets a beat grid worked out in a worker
+  await page.waitForFunction(() => window.__phosphor.renderer.audio.beatSource === 'grid', null, { timeout: 20000 }).catch(() => {});
+  const rhythmNow = await page.evaluate(() => {
+    const a = window.__phosphor.renderer.audio;
+    return { source: a.beatSource, bpm: a.bpm, confidence: a.tempoConfidence };
+  });
+  check('a local file gets a beat grid in the background, and the visuals follow it', rhythmNow.source === 'grid' && Math.abs(rhythmNow.bpm - 124) < 2, JSON.stringify(rhythmNow));
+  const seen = await page.evaluate(async () => {
+    const out = { beats: 0, downbeats: 0, kicks: 0, snares: 0, phases: new Set() };
+    const end = performance.now() + 4000;
+    await new Promise((resolve) => {
+      const step = () => {
+        const a = window.__phosphor.renderer.audio;
+        if (a.beat) out.beats++;
+        if (a.downbeat) out.downbeats++;
+        if (a.kickHit) out.kicks++;
+        if (a.snareHit) out.snares++;
+        out.phases.add(Math.floor(a.beatPhase * 4));
+        if (performance.now() < end) requestAnimationFrame(step);
+        else resolve();
+      };
+      requestAnimationFrame(step);
+    });
+    return { ...out, phases: out.phases.size };
+  });
+  // Four seconds of the demo at 124 BPM: about eight beats and two bars (the demo opens with hi-hats only).
+  check('...beats and bars come at the music\'s tempo, with the beat phase sweeping', seen.beats >= 6 && seen.beats <= 10 && seen.downbeats >= 1 && seen.downbeats <= 3 && seen.phases >= 3, JSON.stringify(seen));
 
   // ---- settings persist
   await page.evaluate(() => window.__phosphor.settings.set({ visualizer: 'terrain', volume: 0.42 }));
@@ -1537,6 +1565,21 @@ async function youtube() {
   await browser.close();
 }
 
+// --------------------------------------------------------------------- rhythm
+
+/** The ground-truth rhythm tests run in Node (scripts/rhythm-test.mjs); their checks are recorded here too. */
+function rhythm() {
+  const { spawnSync } = require('node:child_process');
+  const run = spawnSync(process.execPath, [path.join(__dirname, 'rhythm-test.mjs')], { encoding: 'utf8', maxBuffer: 1 << 24 });
+  const lines = (run.stdout ?? '').split('\n');
+  for (const line of lines) {
+    const m = /^\s*(ok|FAIL)\s+(.*?)(?:\s{2}\((.*)\))?$/.exec(line);
+    if (m) check(`rhythm: ${m[2]}`, m[1] === 'ok', m[3] ?? '');
+    else if (line.startsWith('==')) console.log(`\n${line}`);
+  }
+  if (run.status !== 0 && !lines.some((l) => /FAIL/.test(l))) check('rhythm: the ground-truth test ran', false, (run.stderr ?? '').slice(0, 300));
+}
+
 // ----------------------------------------------------------------------- main
 
 (async () => {
@@ -1544,6 +1587,7 @@ async function youtube() {
     console.error('Test audio is missing. Run: node scripts/make-test-audio.mjs');
     process.exit(2);
   }
+  if (only.includes('rhythm')) rhythm();
   const browser = await chromium.launch({ headless: false, args: GL_ARGS });
   try {
     if (only.includes('visualizers')) await visualizers(browser);

@@ -6,6 +6,7 @@ import { settings } from './app/settings';
 import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
+import { BeatGrids } from './audio/grids';
 import { createHarness } from './debug/harness';
 import { PlaylistLibrary } from './library/playlists';
 import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pickFiles, pickFolder, tracksFromFiles, type IncomingFile } from './player/local';
@@ -63,6 +64,7 @@ try {
 
 const player = new Player();
 const library = new PlaylistLibrary();
+const beatGrids = new BeatGrids(engine.context);
 const capture = new CaptureManager(engine);
 player.register(new LocalBackend(engine));
 // Streaming services. Each brings its own official player as a backend; none
@@ -94,6 +96,7 @@ const app: App = {
   capture,
   services,
   library,
+  beatGrids,
 
   toast: (message, kind) => toasts.show(message, kind),
 
@@ -314,6 +317,20 @@ function maybeAutoShare() {
 player.on('track', (track) => {
   syncArtwork(track);
   route();
+});
+
+// A local file gets a beat grid worked out in the background; until it
+// arrives (and for everything else) the beat is tracked live.
+let gridFor: string | null = null;
+player.on('track', (track) => {
+  const id = track?.id ?? null;
+  if (id === gridFor) return;
+  gridFor = id;
+  renderer.setBeatGrid(null);
+  if (track?.source !== 'local' || !track.file) return;
+  void beatGrids.forFile(track.file).then((grid) => {
+    if (grid && gridFor === id) renderer.setBeatGrid(grid);
+  });
 });
 player.on('change', () => {
   route();

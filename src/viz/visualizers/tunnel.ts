@@ -1,13 +1,14 @@
 // Demoscene tunnel: tiled walls rushing past, each tile lit by the spectrum.
 // Sound enters at the far end and flies toward you as rings of light.
 
-import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH } from '../../gl/glsl';
+import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, RHYTHM } from '../../gl/glsl';
 import { drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { bindOutput, commonUniforms, defineVisualizer } from '../types';
 
 const FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform sampler2D uHistory;
 uniform float uHistHead;
 uniform float uTravel;   // distance flown so far
@@ -24,9 +25,9 @@ const float SPEED = 3.6;         // depth units per second (matches uTravel)
 void main() {
   vec2 p = (gl_FragCoord.xy - 0.5 * uRes) / uRes.y;
   // The tunnel bends: its vanishing point drifts.
-  vec2 bend = 0.16 * vec2(sin(uTime * 0.41), cos(uTime * 0.53)) * (0.5 + uMid);
+  vec2 bend = 0.16 * vec2(sin(uTime * 0.41), cos(uTime * 0.53)) * (0.5 + 0.5 * uMid + 0.6 * colourDrive());
   p -= bend;
-  p *= 1.0 - 0.10 * uBeat;                         // beat: the walls lurch outward
+  p *= 1.0 - 0.10 * pulse();                       // kick/beat: the walls lurch outward
 
   float r = length(p);
   float depth = 0.42 / max(r, 1e-3);
@@ -61,20 +62,20 @@ void main() {
 
   // Every sixth row is a steel rib that flashes with the beat.
   float rib = step(mod(id.y, 6.0), 0.5);
-  vec3 steel = mix(vec3(0.10, 0.11, 0.14), hsv2rgb(vec3(hue + 0.5, 0.35, 1.0)), 0.25 + 0.75 * uBeat);
-  col = mix(col, steel * tile * (0.6 + 1.6 * uBeat + 0.5 * dome), rib);
+  vec3 steel = mix(vec3(0.10, 0.11, 0.14), hsv2rgb(vec3(hue + 0.5 + 0.15 * colourDrive(), 0.35, 1.0)), 0.25 + 0.75 * pulse());
+  col = mix(col, steel * tile * (0.6 + 1.6 * pulse() + 0.5 * dome), rib);
 
   // Four neon tubes run the length of the tunnel; treble makes them fizz.
   float tube = abs(fract(ang * 4.0 + 0.125) - 0.5);
   float neon = smoothstep(0.022, 0.0, tube) + 0.35 * smoothstep(0.09, 0.0, tube);
   float fizz = 0.75 + 0.25 * hash21(vec2(id.y, floor(uTime * 24.0)));
-  col += hsv2rgb(vec3(uTime * 0.03 + 0.55, 0.6, 1.0)) * neon * (0.22 + 1.5 * uTreble * fizz);
+  col += hsv2rgb(vec3(uTime * 0.03 + 0.55, 0.6, 1.0)) * neon * (0.22 + 1.5 * max(uTreble * 0.6, sparkle()) * fizz);
 
   // Distance haze, then the light at the end of the tunnel.
   float fog = exp(-depth * 0.2);
   vec3 haze = hsv2rgb(vec3(uTime * 0.03 + 0.6, 0.6, 1.0));
   col = col * fog + haze * (1.0 - fog) * (0.05 + 0.12 * uLevel);
-  col += haze * (0.08 + 0.55 * uBass + 0.9 * uBeat) * exp(-r * (7.5 - 3.0 * uBass));
+  col += haze * (0.08 + 0.55 * lowDrive() + 0.9 * pulse()) * exp(-r * (7.5 - 3.0 * lowDrive()));
 
   vec2 q = vUv - 0.5;
   col *= 1.0 - 0.6 * dot(q, q);
@@ -97,8 +98,9 @@ export default defineVisualizer({
       resize() {},
       render(frame) {
         const a = frame.audio;
-        if (a.beat && a.beatCount % 16 === 0) rollDir = -rollDir;
-        roll += frame.dt * rollDir * (0.015 + 0.09 * a.mid);
+        // The roll turns round on a drop, or every 32 beats when there are none.
+        if (a.drop || (a.beat && a.beatCount % 32 === 0)) rollDir = -rollDir;
+        roll += frame.dt * rollDir * (0.015 + 0.05 * a.mid + 0.05 * a.vocals);
         bindOutput(gl, frame);
         program.use().set({ ...commonUniforms(frame), uTravel: frame.time * 3.6, uRoll: roll });
         drawFullscreen(gl);

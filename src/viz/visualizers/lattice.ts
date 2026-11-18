@@ -3,13 +3,14 @@
 // beat sends a wave of light racing ahead of you.
 
 import { BloomScene } from '../../gl/bloom';
-import { AUDIO_SAMPLING, COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, PALETTE } from '../../gl/glsl';
+import { AUDIO_SAMPLING, COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, PALETTE, RHYTHM } from '../../gl/glsl';
 import { drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { commonUniforms, defineVisualizer } from '../types';
 
 const FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform vec3 uEye;
 uniform float uRoll;
 uniform float uYaw;
@@ -28,7 +29,7 @@ Cell cellAt(vec3 p, vec3 rd) {
   c.q = p - ci * S;
   c.id = hash31(ci);
   c.level = spectrum(0.02 + c.id * 0.9);
-  c.size = 0.10 + 0.24 * c.level * c.level + 0.03 * uBeat;
+  c.size = 0.10 + 0.24 * c.level * c.level + 0.03 * pulse();
   vec3 d = abs(c.q) - vec3(c.size);
   c.box = length(max(d, 0.0)) + min(max(d.x, max(d.y, d.z)), 0.0) - 0.02;
   // Keep the flight path clear, and leave gaps so the grid isn't a solid wall.
@@ -50,13 +51,13 @@ void main() {
   vec3 fw = normalize(vec3(sin(uYaw) * 0.35, sin(uYaw * 0.7) * 0.2, -1.0));
   vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
   vec3 up = cross(rt, fw);
-  vec3 rd = normalize(fw * (1.05 - 0.12 * uBeat) + rt * p.x + up * p.y);
+  vec3 rd = normalize(fw * (1.05 - 0.12 * pulse()) + rt * p.x + up * p.y);
 
   // The beat launches a sheet of light that travels down the corridor.
   float age = -log(max(uBeat, 1e-3)) / 5.5;
   float waveZ = ro.z - age * 22.0;
 
-  vec3 fogColor = mix(pal(0.6), pal(0.85), 0.5 + 0.5 * rd.y) * (0.035 + 0.06 * uBass);
+  vec3 fogColor = mix(pal(0.6), pal(0.85), 0.5 + 0.5 * rd.y) * (0.035 + 0.06 * lowDrive());
   vec3 glow = vec3(0.0);
   vec3 col = fogColor;
   float t = 0.05;
@@ -69,7 +70,7 @@ void main() {
     float stepLen = min(c.box, c.exit);
     // Haze of light around each cube, brighter for louder bands.
     float wave = exp(-abs(pos.z - waveZ) * 0.9) * uBeat;
-    glow += pal(c.id * 0.9) * exp(-max(c.box, 0.0) * 6.5) * (0.006 + 0.07 * c.level * c.level + 0.10 * wave + 0.05 * uTreble) * min(stepLen, 0.35) * exp(-t * 0.09);
+    glow += pal(c.id * 0.9 + 0.2 * colourDrive()) * exp(-max(c.box, 0.0) * 6.5) * (0.006 + 0.07 * c.level * c.level + 0.10 * wave + 0.05 * uTreble) * min(stepLen, 0.35) * exp(-t * 0.09);
     t += stepLen;
     if (t > 26.0) break;
   }
@@ -95,7 +96,7 @@ void main() {
     // Treble sets random cubes' edges sparking.
     float twinkle = step(0.55, hash21(vec2(c.id * 91.0, floor(uTime * 14.0))));
     surf += tint * edge * (0.4 + 1.7 * c.level + 1.8 * wave);
-    surf += mix(tint, vec3(1.0), 0.6) * edge * twinkle * (2.2 * uTreble + 1.6 * uTrebleHit);
+    surf += mix(tint, vec3(1.0), 0.6) * edge * twinkle * (1.6 * uTreble + 2.2 * sparkle());
     surf += vec3(1.0) * edge * pow(c.level, 4.0) * 0.6;
 
     float fog = exp(-t * 0.15);
@@ -125,9 +126,10 @@ export default defineVisualizer({
       render(frame) {
         const a = frame.audio;
         const t = frame.time;
-        z -= frame.dt * (1.1 + 2.6 * a.bass + 1.5 * a.beatPulse);
-        if (a.beat && a.beatCount % 16 === 0) rollDir = -rollDir;
-        roll += frame.dt * rollDir * (0.04 + 0.25 * a.mid);
+        z -= frame.dt * (1.1 + 2.6 * Math.max(a.bassline, a.bass * 0.5) + 1.5 * Math.max(a.kick, a.beatPulse * 0.85));
+        // The roll turns round on a drop, or every 32 beats when there are none.
+        if (a.drop || (a.beat && a.beatCount % 32 === 0)) rollDir = -rollDir;
+        roll += frame.dt * rollDir * (0.04 + 0.15 * a.mid + 0.2 * a.vocals);
         const eye = [0.22 * Math.sin(t * 0.31), 0.18 * Math.cos(t * 0.27), z];
         scene.begin(false);
         program.use().set({

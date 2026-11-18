@@ -3,7 +3,13 @@
 //
 // Input is raw time-domain PCM (left/right), which keeps this module a pure
 // function of its input: the live path feeds it from AnalyserNodes, the test
-// harness feeds it synthetic signals.
+// harness feeds it synthetic signals, and scripts/rhythm-test.mjs runs it in
+// Node against signals with known beats.
+//
+// The spectrum, band levels and waveform are worked out here; drums, tempo,
+// bars, the bassline, vocals, builds and drops come from rhythm.ts.
+
+import { Rhythm, type BeatGrid, type RhythmFrame } from './rhythm.ts';
 
 export const FFT_SIZE = 2048;
 /** Number of log-spaced spectrum bands exposed to visualizers. */
@@ -18,7 +24,12 @@ const TILT_DB_PER_OCTAVE = 4.2;
 const RANGE_DB = 36;
 const REF_FLOOR_DB = -58;
 
-export interface AudioFrame {
+/**
+ * Everything a visualizer gets from the audio. The rhythm fields (kick,
+ * snare, hat, bassline, vocals, brightness, energy, bpm, beatPhase, barPhase,
+ * downbeat, build, drop, ...) are documented in rhythm.ts.
+ */
+export interface AudioFrame extends RhythmFrame {
   /** Seconds of visual time elapsed. */
   time: number;
   dt: number;
@@ -32,8 +43,6 @@ export interface AudioFrame {
   bassHit: number;
   midHit: number;
   trebleHit: number;
-  /** True only on the frame a beat is detected. */
-  beat: boolean;
   /** 1 on a beat, decaying exponentially to 0. */
   beatPulse: number;
   /** Total beats seen; handy for switching things every N beats. */
@@ -55,7 +64,10 @@ class FFT {
   readonly re: Float32Array;
   readonly im: Float32Array;
 
-  constructor(readonly size: number) {
+  readonly size: number;
+
+  constructor(size: number) {
+    this.size = size;
     const bits = Math.log2(size);
     this.rev = new Uint32Array(size);
     for (let i = 0; i < size; i++) {
@@ -135,14 +147,13 @@ export class Analysis {
   private mid: BandTracker;
   private treble: BandTracker;
 
-  private fluxBins: number;
-  private prevCompressed: Float32Array;
-  private fluxHistory = new Float32Array(72);
-  private fluxIndex = 0;
-  private fluxCount = 0;
-  private sinceBeat = 1;
 
-  constructor(private sampleRate: number) {
+  private readonly sampleRate: number;
+  private readonly rhythm: Rhythm;
+
+  constructor(sampleRate: number) {
+    this.sampleRate = sampleRate;
+    this.rhythm = new Rhythm(sampleRate, FFT_SIZE);
     for (let i = 0; i < FFT_SIZE; i++) this.window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (FFT_SIZE - 1));
 
     const binHz = sampleRate / FFT_SIZE;
@@ -168,10 +179,8 @@ export class Analysis {
     this.mid = tracker(300, 2600);
     this.treble = tracker(4500, 16000);
 
-    this.fluxBins = Math.max(4, Math.round(190 / binHz));
-    this.prevCompressed = new Float32Array(this.fluxBins + 1);
-
     this.frame = {
+      ...this.rhythm.out,
       time: 0,
       dt: 0,
       level: 0,
@@ -181,7 +190,6 @@ export class Analysis {
       bassHit: 0,
       midHit: 0,
       trebleHit: 0,
-      beat: false,
       beatPulse: 0,
       beatCount: 0,
       presence: 0,
@@ -195,8 +203,10 @@ export class Analysis {
   /**
    * Advances the analysis by one visual frame.
    * `left`/`right` hold the most recent FFT_SIZE samples of each channel.
+   * `position` is the playback position of the current track, used with a
+   * beat grid (setBeatGrid) so beats land exactly.
    */
-  process(left: Float32Array, right: Float32Array, dt: number): AudioFrame {
+  process(left: Float32Array, right: Float32Array, dt: number, position?: number): AudioFrame {
     const f = this.frame;
     const { mono, windowed, amp } = this;
     dt = Math.max(1e-4, dt);
@@ -219,7 +229,14 @@ export class Analysis {
 
     this.updateSpectrum(dt);
     this.updateBands(dt);
-    this.updateBeat(dt, peak);
+    const rhythm = this.rhythm.process(amp, dt, f.time, f.presence, position);
+    Object.assign(f, rhythm);
+    if (rhythm.beat) {
+      f.beatPulse = 1;
+      f.beatCount++;
+    } else {
+      f.beatPulse *= Math.exp(-dt * 5.5);
+    }
     this.updateWaveform(left, right, dt, peak);
 
     f.presence = smoothTowards(f.presence, peak > 0.002 ? 1 : 0, dt, 0.15, 0.8);
@@ -290,50 +307,6 @@ export class Analysis {
     f.trebleHit = this.treble.hit;
   }
 
-  /** Beat detection: adaptive threshold on low-frequency spectral flux. */
-  private updateBeat(dt: number, peak: number) {
-    const f = this.frame;
-    const prev = this.prevCompressed;
-    let flux = 0;
-    for (let i = 1; i <= this.fluxBins; i++) {
-      const c = Math.log1p(this.amp[i] * 400);
-      const d = c - prev[i];
-      if (d > 0) flux += d;
-      prev[i] = c;
-    }
-    flux /= this.fluxBins;
-
-    let mean = 0;
-    const n = Math.max(1, this.fluxCount);
-    for (let i = 0; i < n; i++) mean += this.fluxHistory[i];
-    mean /= n;
-    let variance = 0;
-    for (let i = 0; i < n; i++) variance += (this.fluxHistory[i] - mean) ** 2;
-    const std = Math.sqrt(variance / n);
-
-    this.sinceBeat += dt;
-    const threshold = mean * 1.35 + std * 1.5 + 0.035;
-    // The bass band must actually be loud relative to the rest of the mix, so
-    // hi-hats and other bright transients with a little low-end spill don't count.
-    let lowNow = 0;
-    for (let i = this.bass.lo; i < this.bass.hi; i++) if (this.instant[i] > lowNow) lowNow = this.instant[i];
-    const beat =
-      this.fluxCount > 12 && flux > threshold && this.sinceBeat > 0.26 && peak > 0.004 && lowNow > 0.3;
-
-    this.fluxHistory[this.fluxIndex] = flux;
-    this.fluxIndex = (this.fluxIndex + 1) % this.fluxHistory.length;
-    this.fluxCount = Math.min(this.fluxCount + 1, this.fluxHistory.length);
-
-    f.beat = beat;
-    if (beat) {
-      this.sinceBeat = 0;
-      f.beatPulse = 1;
-      f.beatCount++;
-    } else {
-      f.beatPulse *= Math.exp(-dt * 5.5);
-    }
-  }
-
   private updateWaveform(left: Float32Array, right: Float32Array, dt: number, peak: number) {
     const f = this.frame;
     const mono = this.mono;
@@ -371,5 +344,14 @@ export class Analysis {
 
   get rate() {
     return this.sampleRate;
+  }
+
+  /** Beats and bars worked out ahead of time for the current track (local files), or null. */
+  setBeatGrid(grid: BeatGrid | null) {
+    this.rhythm.setGrid(grid);
+  }
+
+  get hasBeatGrid() {
+    return this.rhythm.hasGrid;
   }
 }

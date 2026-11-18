@@ -1,13 +1,14 @@
 // Kaleidoscope: shards of coloured glass tumbling behind a ring of mirrors.
 // Every shard listens to its own slice of the spectrum.
 
-import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, AUDIO_SAMPLING } from '../../gl/glsl';
+import { COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, AUDIO_SAMPLING, RHYTHM } from '../../gl/glsl';
 import { drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { bindOutput, commonUniforms, defineVisualizer } from '../types';
 
 const FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform float uSegments;
 uniform float uSpin;      // rotation of the mirrors
 uniform float uTumble;    // rotation of the glass behind them
@@ -54,7 +55,7 @@ void main() {
 
   // The glass itself tumbles and drifts behind the mirrors.
   float ct = cos(uTumble), st = sin(uTumble);
-  float zoom = 7.0 - 2.2 * uBass - 1.2 * uBeat;
+  float zoom = 7.0 - 2.2 * lowDrive() - 1.2 * pulse();
   vec2 sp = mat2(ct, -st, st, ct) * q * zoom + uDrift;
   vec3 sh = shards(sp, uTime * 0.5);
   float edge = sh.x;
@@ -64,7 +65,7 @@ void main() {
   float level = spectrum(0.03 + id * 0.85);
   vec3 glass = hsv2rgb(vec3(id * 1.7 + uTime * 0.035 + r * 0.12, 0.84 - 0.3 * level, 1.0));
   float body = smoothstep(0.0, 0.32, edge);                      // thicker, brighter in the middle
-  float light = 0.20 + 0.22 * body + 1.9 * level * level + 0.35 * uBeat;
+  float light = 0.20 + 0.22 * body + 1.9 * level * level + 0.35 * pulse();
   vec3 col = glass * light;
   col *= 0.86 + 0.14 * sin(dot(sp, vec2(3.1, 2.3)) + uTime * 1.5);   // light shimmering through
 
@@ -73,11 +74,11 @@ void main() {
   float bevel = smoothstep(0.16, 0.05, edge) * lead;
   col *= lead;
   col += glass * bevel * (0.2 + 1.8 * uTreble);
-  col += vec3(1.0) * bevel * uTrebleHit * step(0.75, sh.z) * 1.4;    // sparkle
+  col += vec3(1.0) * bevel * sparkle() * step(0.75, sh.z) * 1.4;     // hi-hats sparkle
 
   // Seams where the mirrors meet.
   float seam = smoothstep(0.006, 0.0, a * r) + smoothstep(0.006, 0.0, (seg * 0.5 - a) * r);
-  col += vec3(0.9, 0.95, 1.0) * seam * (0.06 + 0.2 * uBeat);
+  col += vec3(0.9, 0.95, 1.0) * seam * (0.06 + 0.2 * pulse());
 
   col += glass * uFlash * 0.6;
   col *= smoothstep(1.35, 0.55, r);                                   // the tube's rim
@@ -106,13 +107,14 @@ export default defineVisualizer({
       render(frame) {
         const a = frame.audio;
         const dt = frame.dt;
-        spin += dt * (0.06 + 0.5 * a.mid);
+        spin += dt * (0.06 + 0.3 * a.mid + 0.4 * a.vocals);
         tumble -= dt * (0.1 + 0.6 * a.mid + 0.8 * a.midHit);
         flash *= Math.exp(-dt * 4);
         drift[0] += dt * (0.12 + 0.5 * a.level);
         drift[1] -= dt * (0.08 + 0.35 * a.level);
         // Every 16 beats the mirror count changes, with a flash to cover the cut.
-        if (a.beat && a.beatCount % 16 === 0) {
+        // A new pattern on a drop, or every 32 beats when there are none.
+        if (a.drop || (a.beat && a.beatCount % 32 === 0)) {
           step = (step + 1) % SEGMENT_STEPS.length;
           flash = 1;
         }

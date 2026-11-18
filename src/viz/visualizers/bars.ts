@@ -2,7 +2,7 @@
 // mirrored floor reflection.
 
 import { BANDS } from '../../audio/analysis';
-import { COMMON_UNIFORMS, FS_HEADER } from '../../gl/glsl';
+import { COMMON_UNIFORMS, FS_HEADER, RHYTHM } from '../../gl/glsl';
 import { bindTexture, DataTexture, drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { bindOutput, commonUniforms, defineVisualizer } from '../types';
 
@@ -11,6 +11,7 @@ const MAX_BARS = 96;
 const FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform sampler2D uBars;   // R = bar height, G = peak cap height
 uniform float uCount;
 
@@ -31,7 +32,7 @@ void main() {
   // Backdrop: near-black with a pool of light on the floor that breathes with the beat.
   vec3 col = vec3(0.012, 0.014, 0.022);
   float floorGlow = exp(-abs(uv.y - BASE) * 9.0);
-  col += vec3(0.05, 0.11, 0.16) * floorGlow * (0.35 + 1.4 * uBeat + 0.6 * uBass);
+  col += vec3(0.05, 0.11, 0.16) * floorGlow * (0.35 + 1.4 * pulse() + 0.6 * lowDrive());
   col *= 1.0 - 0.55 * dot(uv - 0.5, uv - 0.5);
 
   float x = (uv.x - LEFT) / (RIGHT - LEFT);
@@ -61,8 +62,8 @@ void main() {
 
     vec3 led = ledColor(rowT);
     vec3 c = led * 0.045;                           // unlit segments stay faintly visible
-    c += led * lit * (0.85 + 0.5 * uBeat);
-    c = mix(c, vec3(0.86, 0.97, 1.0) * (1.1 + 0.9 * uBeat), isPeak);
+    c += led * lit * (0.85 + 0.5 * pulse());
+    c = mix(c, vec3(0.86, 0.97, 1.0) * (1.1 + 0.9 * pulse() + 0.7 * sparkle()), isPeak);
     // soft halo above the column
     float halo = exp(-max(0.0, y - d.r) * 14.0) * d.r * 0.10;
     col += led * halo * (1.0 - barMask * segMask);
@@ -74,7 +75,7 @@ void main() {
 
   // Floor line
   float line = smoothstep(0.004, 0.0, abs(uv.y - BASE));
-  col += vec3(0.25, 0.55, 0.7) * line * (0.25 + 0.6 * uLevel);
+  col += vec3(0.25, 0.55, 0.7) * line * (0.25 + 0.6 * uLevel + 0.4 * colourDrive());
   o = vec4(col, 1.0);
 }`;
 

@@ -3,13 +3,14 @@
 // every beat sends a shockwave through the space behind it.
 
 import { BloomScene } from '../../gl/bloom';
-import { AUDIO_SAMPLING, COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, NOISE, PALETTE } from '../../gl/glsl';
+import { AUDIO_SAMPLING, COLOR, COMMON_UNIFORMS, FS_HEADER, HASH, NOISE, PALETTE, RHYTHM } from '../../gl/glsl';
 import { drawFullscreen, FULLSCREEN_VS, Program } from '../../gl/util';
 import { commonUniforms, defineVisualizer } from '../types';
 
 const FS = /* glsl */ `${FS_HEADER}
 in vec2 vUv; out vec4 o;
 ${COMMON_UNIFORMS}
+${RHYTHM}
 uniform vec3 uEye;
 uniform float uSwell;
 ${HASH}
@@ -33,7 +34,7 @@ float surfaceRadius(vec3 n) {
   float band = (spectrum(bx - 0.08) + spectrum(bx - 0.04) + spectrum(bx) + spectrum(bx + 0.04) + spectrum(bx + 0.08)) * 0.2;
   // Fine grain, driven by treble.
   float grain = vnoise3(n * 8.0 + vec3(0.0, t * 0.9, 0.0)) - 0.5;
-  return 1.0 + uSwell + lobes * (0.05 + 0.2 * uBass) + band * band * 0.24 + grain * (0.01 + 0.1 * uTreble);
+  return 1.0 + uSwell + lobes * (0.05 + 0.2 * lowDrive()) + band * band * 0.24 + grain * (0.01 + 0.1 * uTreble);
 }
 
 float map(vec3 p) {
@@ -56,7 +57,7 @@ vec3 environment(vec3 d) {
   c += pal(0.75) * pow(max(dot(d, normalize(vec3(-0.2, 0.9, -0.3))), 0.0), 12.0) * 1.2;
   float az = atan(d.z, d.x);
   float strips = smoothstep(0.035, 0.015, abs(fract(az * 0.9549 + 0.25) - 0.5)) * smoothstep(0.75, 0.35, abs(d.y));
-  c += mix(pal(0.6), vec3(1.0), 0.5) * strips * (0.5 + 0.9 * uLevel);
+  c += mix(pal(0.6 + 0.15 * colourDrive()), vec3(1.0), 0.5) * strips * (0.5 + 0.6 * uLevel + 0.5 * colourDrive());
   c += vec3(0.9, 0.95, 1.0) * smoothstep(0.03, 0.01, abs(d.y - 0.62)) * 0.5;
   c += vec3(0.025) * (0.5 + 0.5 * d.y);
   return c;
@@ -75,9 +76,9 @@ void main() {
   vec3 col = environment(rd) * 0.05;
   // nebula haze
   float haze = fbm(rd.xy * 2.2 + vec2(uTime * 0.03, 0.0)) * fbm(rd.yz * 3.1 - uTime * 0.02);
-  col += pal(0.1 + haze) * haze * (0.10 + 0.25 * uMid);
+  col += pal(0.1 + haze) * haze * (0.10 + 0.15 * uMid + 0.2 * colourDrive());
   // halo hugging the orb
-  col += pal(0.3) * exp(-max(closest - 1.0, 0.0) * 3.4) * (0.07 + 0.3 * uBass + 0.35 * uBeat);
+  col += pal(0.3) * exp(-max(closest - 1.0, 0.0) * 3.4) * (0.07 + 0.3 * lowDrive() + 0.35 * pulse());
   // beat shockwave: a ring racing outward
   float age = -log(max(uBeat, 1e-3)) / 5.5;
   float ring = 1.15 + age * 3.4;
@@ -85,7 +86,7 @@ void main() {
   // distant sparks that glint with the treble
   vec3 sg = rd * 55.0;
   float spark = step(0.992, hash31(floor(sg))) * smoothstep(0.3, 0.05, length(fract(sg) - 0.5));
-  col += vec3(0.9, 0.95, 1.0) * spark * (0.25 + 1.6 * uTreble + 1.2 * uTrebleHit);
+  col += vec3(0.9, 0.95, 1.0) * spark * (0.25 + 1.2 * uTreble + 1.6 * sparkle());
 
   // ---- the orb: only march rays that enter its bounding sphere
   float b = dot(ro, rd);
@@ -112,7 +113,7 @@ void main() {
       vec3 film = pal(0.15 + fres * 0.5 + height * 1.6 + uTime * 0.02);
       vec3 surf = environment(refl) * mix(vec3(0.5), film, 0.7);
       surf += film * (0.02 + 1.1 * max(height - 0.03, 0.0));      // raised bulges glow from within
-      surf += film * fres * fres * (0.5 + 1.3 * uBeat);           // rim
+      surf += film * fres * fres * (0.5 + 1.3 * pulse());         // rim
       surf += vec3(1.0) * pow(max(dot(refl, normalize(vec3(0.5, 0.8, 0.4))), 0.0), 90.0) * 1.5;
       col = surf;
     }
@@ -139,10 +140,10 @@ export default defineVisualizer({
       },
       render(frame) {
         const a = frame.audio;
-        orbit += frame.dt * (0.14 + 0.35 * a.mid);
+        orbit += frame.dt * (0.14 + 0.2 * a.mid + 0.25 * a.vocals);
         // A spring so the swell overshoots a little on each hit.
-        swell += (0.06 * a.bass + 0.16 * a.bassHit - swell) * Math.min(1, frame.dt * 14);
-        const dist = 5.3 - 0.3 * a.beatPulse;
+        swell += (0.06 * Math.max(a.bassline, a.bass * 0.5) + 0.16 * Math.max(a.kick, a.bassHit * 0.6) - swell) * Math.min(1, frame.dt * 14);
+        const dist = 5.3 - 0.3 * Math.max(a.kick, a.beatPulse * 0.85);
         const eye = [Math.sin(orbit) * dist, 0.5 * Math.sin(frame.time * 0.21), Math.cos(orbit) * dist];
         scene.begin(false);
         program.use().set({ ...commonUniforms(frame), uRes: [scene.width, scene.height], uEye: eye, uSwell: swell });

@@ -2,6 +2,7 @@
 
 import type { CaptureManager } from '../audio/capture';
 import type { AudioEngine } from '../audio/engine';
+import type { BeatGrids } from '../audio/grids';
 import type { PlaylistLibrary } from '../library/playlists';
 import type { IncomingFile } from '../player/local';
 import type { Player } from '../player/player';
@@ -18,6 +19,8 @@ export interface App {
   capture: CaptureManager;
   services: MusicService[];
   library: PlaylistLibrary;
+  /** Beat grids for local files, worked out in the background. */
+  beatGrids: BeatGrids;
 
   toast(message: string, kind?: 'info' | 'error'): void;
   /** Opens a sheet, optionally on a specific tab/section. */

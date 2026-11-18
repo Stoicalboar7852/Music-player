@@ -214,29 +214,29 @@ export default defineVisualizer({
           inks.push({ x, y, radius: radius * 0.8, value: [ink[0] * f, ink[1] * f, ink[2] * f] });
         };
 
-        // Bass: a fountain from the bottom of the screen.
-        const bass = a.bass * 0.5 + a.bassHit * 1.4;
+        // The bassline feeds a fountain from the bottom of the screen; kicks make it spurt.
+        const bass = Math.max(a.bassline, a.bass * 0.5) * 0.5 + Math.max(a.kick, a.bassHit * 0.6) * 1.4;
         if (bass > 0.02) {
           jet(0.5 + 0.12 * Math.sin(t * 0.7), 0.04, Math.PI / 2 + 0.35 * Math.sin(t * 1.3), 150 * bass, 0.0028, color(0, 0.55 * bass));
         }
-        // Mids: two jets from the sides, sweeping up and down.
-        const mid = a.mid * 0.5 + a.midHit * 1.2;
+        // Vocals and mids: two jets from the sides, sweeping up and down; snares splash them.
+        const mid = a.mid * 0.3 + a.vocals * 0.4 + Math.max(a.snare, a.midHit * 0.6) * 1.2;
         if (mid > 0.02) {
           jet(0.03, 0.5 + 0.3 * Math.sin(t * 0.53), 0.5 * Math.sin(t * 0.9), 110 * mid, 0.0016, color(1, 0.5 * mid));
           jet(0.97, 0.5 - 0.3 * Math.sin(t * 0.47), Math.PI + 0.5 * Math.sin(t * 0.8), 110 * mid, 0.0016, color(2, 0.5 * mid));
         }
-        // Treble: small fast nozzles circling the upper half.
-        const treble = a.treble * 0.5 + a.trebleHit * 1.3;
+        // Treble: small fast nozzles circling the upper half, flicking on the hi-hats.
+        const treble = a.treble * 0.5 + Math.max(a.hat, a.trebleHit * 0.5) * 1.3;
         if (treble > 0.02) {
           for (let i = 0; i < 2; i++) {
             const ang = t * (1.7 + i * 0.6) + i * Math.PI;
             jet(0.5 + 0.3 * Math.cos(ang) / aspect * 1.6, 0.62 + 0.22 * Math.sin(ang), ang + Math.PI / 2, 95 * treble, 0.0005, color(3, 0.75 * treble));
           }
         }
-        // Beat: a ring of jets blasting outward from a random spot.
-        if (a.beat) {
-          const cx = 0.25 + 0.5 * ctx.random();
-          const cy = 0.3 + 0.4 * ctx.random();
+        // Beat: a ring of jets blasting outward from a random spot (on a drop, from the middle).
+        if (a.beat || a.drop) {
+          const cx = a.drop ? 0.5 : 0.25 + 0.5 * ctx.random();
+          const cy = a.drop ? 0.5 : 0.3 + 0.4 * ctx.random();
           const ink = color(Math.floor(ctx.random() * 4), 1.1);
           const offset = ctx.random() * Math.PI;
           for (let i = 0; i < 5; i++) {
@@ -325,7 +325,7 @@ export default defineVisualizer({
           uDye: 0,
           uTexel: [1 / dye.read.width, 1 / dye.read.height],
           uTint: [pal[3], pal[4], pal[5]],
-          uBeat: a.beatPulse,
+          uBeat: Math.max(a.kick, a.beatPulse * 0.85),
         });
         bindTexture(gl, 0, dye.read.tex);
         drawFullscreen(gl);
