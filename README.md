@@ -14,6 +14,7 @@ It plays local files, whatever your computer is playing (system or tab audio), S
 | --- | --- | --- |
 | [**v1**](../../tree/v1) | The first complete version, kept as it was: 12 visualizers, local files, system audio capture, Spotify, Apple Music and YouTube. | You want the stable version. |
 | [**v2**](../../tree/v2) | The new version: everything in v1, plus the fixes and features listed [below](#whats-new-in-v2): 25 visualizers, beat tracking, crossfades and DJ mixes, playlists across services, a phone-friendly installable app and a desktop app. | You want the newest features. It has had less time with the real streaming services than v1 (see its README). |
+| [**v3**](../../tree/v3) | Work in progress: everything in v2, plus the plan [below](#coming-in-v3) as it lands. | You want to follow the newest work. |
 
 To get the code, open the branch, click the green **Code** button and choose **Download ZIP**. Or, with git: `git clone --branch v1 <this repository's URL>` (use `v2` for the newer version).
 
@@ -77,3 +78,16 @@ All of it is on the [v2](../../tree/v2) branch; its README has the details.
 6. **Apps:**
    - **Install it** from Chrome or Edge on a computer, Chrome on Android, or Safari on iPhone and iPad (Share, Add to Home Screen). It opens in its own window and works offline with your own files. Phones can't share other apps' audio with a page, so there it listens through the microphone.
    - **A desktop app for macOS and Windows,** with a live visualizer in the macOS menu bar or the Windows tray and a mini player under it. It listens to the whole computer without the share dialog, shows as Phosphor in Now Playing, and plays Spotify through the Spotify app. Download it from the repository's **Actions** tab: open the latest **Desktop app** run and get **Phosphor-macOS** (disk images for Apple silicon and Intel Macs) or **Phosphor-Windows** (an installer) under *Artifacts*. Those downloads are kept for 14 days; tagging a version (for example `v2.0.0`) makes a permanent release with the installers attached. They aren't signed with a paid certificate, so the first launch needs an extra click; the v2 README explains it.
+
+## Coming in v3
+
+Work happens on the [v3](../../tree/v3) branch, in this order:
+
+1. **Presenter view:** a second window with only the visuals, for a projector or TV, full screen on the display you choose. The window you control from keeps every control, and can show a QR code for the song, the title and artist, a logo, blackout or freeze on the audience screen.
+2. **More visualizers,** with a new Games category: original designs inspired by the feel of games such as Hollow Knight, Minecraft, Planet of Lana, Undertale and Deltarune, Geometry Dash and Rocket League (no characters, names, art or music from them).
+3. **Desktop platform:** comparing Electron with Tauri (Rust), and moving to whatever does the most.
+4. **Spotify inside the desktop app** without the Spotify app open: Spotify's own web player through a Widevine-enabled build first, and an unofficial Spotify Connect receiver (librespot) as an off-by-default option.
+5. **No more tab sharing in the browser,** as far as browsers allow: a one-time setup that lets Phosphor listen to the computer by itself on every visit.
+6. **FreeShow and ProPresenter:** Phosphor's visuals on their audience output (behind lyrics or full screen) through NDI, Syphon, Spout or a web source, and following their cues.
+7. **Phones:** a native app only if it's the only way to visualize Spotify without the microphone.
+
