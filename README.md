@@ -45,7 +45,7 @@ The README on the branch you picked has step-by-step setup for each service. All
 
 | Service | Needs |
 | --- | --- |
-| YouTube / YouTube Music | Nothing to paste links. A free API key adds search. |
+| YouTube / YouTube Music | Nothing to paste links. A free API key adds search and popular music; an optional Google sign-in (v2) adds your own playlists and likes. |
 | Spotify | A Spotify Premium account and a free app registered in Spotify's developer dashboard (about 5 minutes). |
 | Apple Music | A paid Apple Developer membership (for the token) and an Apple Music subscription for full tracks. |
 
@@ -64,8 +64,8 @@ Streaming services don't let web pages read their audio, so the visualizers reac
 Work happens on the [v2](../../tree/v2) branch, in this order:
 
 1. **Fixes** (done): the next song starts by itself when a Spotify song ends; macOS Now Playing shows the track, artist and artwork, and media keys control Phosphor.
-2. **Easier start:** streaming services on the first screen; less manual audio sharing.
-3. **Library:** browsing each service, and Phosphor playlists that mix tracks and whole playlists from Spotify, Apple Music, YouTube and local files, updating live.
+2. **Easier start** (done): streaming services on the first screen with their live state; starting a streaming song opens the share-audio dialog straight away.
+3. **Library** (done): a home view for each service (recently played, top songs, your playlists and albums, Apple's For You and charts, YouTube's popular music and, with Google sign-in, your own playlists), Spotify-made playlists played by link, saving to your Spotify or Apple Music library, and Phosphor playlists that mix tracks and whole playlists from every source, updating live.
 4. **Better music reaction:** beat tracking that follows the drums rather than vocals, with different parts of each visualizer reacting to different parts of the song, plus at least 12 new visualizers.
 5. **Playback:** crossfade, and DJ-style "mix" transitions for local files.
 6. **Apps:** desktop apps for macOS and Windows (with a menu-bar visualizer), and an installable phone version.
