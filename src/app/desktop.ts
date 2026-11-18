@@ -37,6 +37,8 @@ interface DesktopBridge {
   sendState(state: DesktopState): void;
   sendLevels(levels: DesktopLevels): void;
   onCommand(callback: (name: string) => void): () => void;
+  /** Starts the Spotify app (for Spotify Connect). */
+  openSpotify?(): void;
 }
 
 export const desktop: DesktopBridge | null = (window as Window & { phosphorDesktop?: DesktopBridge }).phosphorDesktop ?? null;

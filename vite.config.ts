@@ -41,7 +41,8 @@ function serviceWorker(): Plugin {
 // server binds to 127.0.0.1 (not "localhost") and keeps a fixed port.
 export default defineConfig({
   base: './',
-  server: { host: '127.0.0.1', port: 5173, strictPort: true },
+  // (desktop/ holds the desktop app, with its own copy of the build: not part of this site.)
+  server: { host: '127.0.0.1', port: 5173, strictPort: true, watch: { ignored: ['**/desktop/**'] } },
   preview: { host: '127.0.0.1', port: 5173, strictPort: true },
   build: { target: 'es2022', chunkSizeWarningLimit: 1500 },
   plugins: [serviceWorker()],

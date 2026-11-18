@@ -38,6 +38,8 @@ try {
   check('the window opens Phosphor from its local server', /^http:\/\/127\.0\.0\.1:\d+\/$/.test(info.url), info.url);
   check('the page has the desktop bridge', info.platform === process.platform && Boolean(info.desktop), JSON.stringify(info));
   check('the menu bar or tray icon exists', await app.evaluate(() => globalThis.__phosphorDesktop.hasTray));
+  const spotifyApp = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode);
+  check('Spotify is set to play through the Spotify app (no Widevine here)', spotifyApp === true);
 
   // The demo is synthesised in the page, so it needs no files and no network.
   await page.click('.welcome >> text=Play demo');

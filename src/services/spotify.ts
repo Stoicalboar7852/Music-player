@@ -12,6 +12,7 @@
 //    development-mode apps are capped at 10 search results per type
 
 import { debug } from '../app/debug';
+import { desktop } from '../app/desktop';
 import { Emitter } from '../app/emitter';
 import { appBaseUrl, settings } from '../app/settings';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
@@ -227,6 +228,240 @@ export async function handleSpotifyCallback(): Promise<boolean> {
   return false;
 }
 
+// ---------------------------------------------------------- Spotify Connect
+
+/** What GET /me/player returns (the parts used here). */
+interface ApiPlayback {
+  is_playing: boolean;
+  progress_ms: number | null;
+  timestamp?: number;
+  context?: { uri: string } | null;
+  item?: (Partial<SdkTrack> & { uri: string; name: string; duration_ms: number }) | null;
+  currently_playing_type?: string;
+}
+
+interface ApiDevice {
+  id: string | null;
+  is_active: boolean;
+  is_restricted?: boolean;
+  name: string;
+  type: string;
+}
+
+type ApiCall = <T>(path: string, init?: RequestInit) => Promise<T>;
+
+/**
+ * Calls `tick` every `ms`, from a worker: in a background tab Chrome slows a
+ * page's own timers to once a second, then once a minute, but not a
+ * worker's. (Falls back to a plain timer where workers aren't available.)
+ */
+function steadyTicker(ms: number, tick: () => void): () => void {
+  try {
+    const url = URL.createObjectURL(new Blob([`setInterval(() => postMessage(0), ${ms});`], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    worker.onmessage = () => tick();
+    return () => {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+    };
+  } catch {
+    const id = window.setInterval(tick, ms);
+    return () => window.clearInterval(id);
+  }
+}
+
+/**
+ * Spotify Connect: rather than playing in this page, Phosphor drives the
+ * Spotify app (on this computer, or any device signed in to the account)
+ * through the Web API, and follows it by asking for its state about once a
+ * second while a song plays. It stands in for the Web Playback SDK's player,
+ * and like the SDK reports state only when something changes, so the
+ * service's own logic for songs ending, lists and autoplay works unchanged.
+ *
+ * Used in the desktop app, where Spotify's web player can't run, and in the
+ * browser when chosen in Settings (for example on a phone).
+ */
+export class ConnectPlayer implements SdkPlayer {
+  deviceName = '';
+  private device = '';
+  /** When to ask the Spotify app for its state next (performance.now()), 0 for not at all. */
+  private pollAt = 0;
+  private polling = false;
+  private stopTicker: (() => void) | null = null;
+  private reported: SdkState | null = null;
+  private reportedAt = 0;
+  private volumeTimer = 0;
+  private volumeSent = -1;
+  private volumeWanted = -1;
+  private readonly api: ApiCall;
+  private readonly report: (state: SdkState | null) => void;
+  private readonly following: () => boolean;
+
+  constructor(api: ApiCall, report: (state: SdkState | null) => void, following: () => boolean) {
+    this.api = api;
+    this.report = report;
+    this.following = following;
+  }
+
+  async connect() {
+    return true;
+  }
+  disconnect() {
+    this.pollAt = 0;
+    this.stopTicker?.();
+    this.stopTicker = null;
+  }
+  addListener() {}
+  async activateElement() {}
+
+  /** Picks the device to play on: the one already playing, else a computer (the Spotify app here), else any. Empty if none. */
+  async findDevice(): Promise<string> {
+    const answer = await this.api<{ devices?: ApiDevice[] } | undefined>('/me/player/devices');
+    const usable = (answer?.devices ?? []).filter((d) => d.id && !d.is_restricted);
+    const pick = usable.find((d) => d.is_active) ?? usable.find((d) => d.type === 'Computer') ?? usable[0];
+    this.device = pick?.id ?? '';
+    this.deviceName = pick?.name ?? '';
+    return this.device;
+  }
+
+  private on(extra = '') {
+    return `device_id=${encodeURIComponent(this.device)}${extra}`;
+  }
+
+  async pause() {
+    await this.api(`/me/player/pause?${this.on()}`, { method: 'PUT' });
+    this.followSoon();
+  }
+  async resume() {
+    await this.api(`/me/player/play?${this.on()}`, { method: 'PUT' });
+    this.followSoon();
+  }
+  async seek(ms: number) {
+    await this.api(`/me/player/seek?${this.on(`&position_ms=${Math.max(0, Math.round(ms))}`)}`, { method: 'PUT' });
+    this.followSoon();
+  }
+  async nextTrack() {
+    await this.api(`/me/player/next?${this.on()}`, { method: 'POST' });
+    this.followSoon();
+  }
+  async previousTrack() {
+    await this.api(`/me/player/previous?${this.on()}`, { method: 'POST' });
+    this.followSoon();
+  }
+
+  /**
+   * The Spotify app's volume follows changes to Phosphor's (a few steps a
+   * second at most). The first value is only noted: starting a song doesn't
+   * change the volume you had in the Spotify app.
+   */
+  async setVolume(volume: number) {
+    this.volumeWanted = Math.round(Math.max(0, Math.min(1, volume)) * 100);
+    if (this.volumeSent < 0) {
+      this.volumeSent = this.volumeWanted;
+      return;
+    }
+    if (this.volumeTimer) return;
+    const send = () => {
+      this.volumeTimer = 0;
+      if (this.volumeWanted === this.volumeSent || !this.device) return;
+      this.volumeSent = this.volumeWanted;
+      void this.api(`/me/player/volume?${this.on(`&volume_percent=${this.volumeSent}`)}`, { method: 'PUT' }).catch(() => {});
+      this.volumeTimer = window.setTimeout(send, 300);
+    };
+    send();
+  }
+
+  /** The state now, with the songs coming up in a list (for Next within it). */
+  async getCurrentState(): Promise<SdkState | null> {
+    const state = await this.read();
+    if (state?.context) {
+      const queue = await this.api<{ queue?: SdkTrack[] } | undefined>('/me/player/queue').catch(() => undefined);
+      state.track_window.next_tracks = queue?.queue ?? [];
+    }
+    this.reported = state;
+    this.reportedAt = performance.now();
+    return state;
+  }
+
+  /** Starts following the Spotify app (after asking it to play). */
+  follow() {
+    this.schedule(400);
+  }
+  private followSoon() {
+    this.schedule(350);
+  }
+  private schedule(ms: number) {
+    this.pollAt = performance.now() + ms;
+    this.stopTicker ??= steadyTicker(200, () => {
+      if (this.pollAt && !this.polling && performance.now() >= this.pollAt) void this.poll();
+    });
+  }
+
+  private async poll() {
+    this.pollAt = 0;
+    if (!this.following()) {
+      // Nothing to follow: stop ticking until the next song.
+      this.stopTicker?.();
+      this.stopTicker = null;
+      return;
+    }
+    this.polling = true;
+    let state: SdkState | null;
+    try {
+      state = await this.read();
+    } catch {
+      this.schedule(3000);
+      return;
+    } finally {
+      this.polling = false;
+    }
+    if (this.changed(state)) {
+      this.reported = state;
+      this.reportedAt = performance.now();
+      this.report(state);
+    }
+    this.schedule(state && !state.paused ? 1000 : 2500);
+  }
+
+  private async read(): Promise<SdkState | null> {
+    const p = await this.api<ApiPlayback | undefined>('/me/player?additional_types=track');
+    const item = p?.item;
+    if (!p || !item || (p.currently_playing_type && p.currently_playing_type !== 'track')) return null;
+    return {
+      paused: !p.is_playing,
+      loading: false,
+      position: p.progress_ms ?? 0,
+      duration: item.duration_ms,
+      timestamp: p.timestamp ?? Date.now(),
+      context: p.context ? { uri: p.context.uri } : null,
+      track_window: {
+        current_track: {
+          uri: item.uri,
+          id: item.id ?? null,
+          name: item.name,
+          duration_ms: item.duration_ms,
+          artists: item.artists ?? [],
+          album: { name: item.album?.name ?? '', images: item.album?.images ?? [] },
+          linked_from: item.linked_from ?? null,
+        },
+        previous_tracks: [],
+      },
+    };
+  }
+
+  /** Like the SDK: report a change, not every answer. */
+  private changed(state: SdkState | null): boolean {
+    const last = this.reported;
+    if (!state || !last) return state !== last;
+    if (state.paused !== last.paused) return true;
+    if (state.track_window.current_track?.uri !== last.track_window.current_track?.uri) return true;
+    if ((state.context?.uri ?? null) !== (last.context?.uri ?? null)) return true;
+    // A jump the clock can't explain: a seek, or a restart.
+    const expected = last.paused ? last.position : last.position + (performance.now() - this.reportedAt);
+    return Math.abs(state.position - expected) > 2500;
+  }
+}
+
 // ------------------------------------------------------------------ service
 
 class SpotifyBackend implements Backend {
@@ -275,7 +510,21 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   readonly id = 'spotify' as const;
   readonly name = 'Spotify';
   readonly linkHint = 'Spotify track, album or playlist link';
-  readonly limits = [
+  get limits(): string[] {
+    return this.connectMode ? this.connectLimits : this.pageLimits;
+  }
+  private readonly connectLimits = [
+    'Requires Spotify Premium (Spotify only lets apps control playback for Premium accounts).',
+    desktop
+      ? "Spotify plays in the Spotify app, which Phosphor controls (Spotify Connect): Spotify's web player can't run inside the desktop app. Keep the Spotify app open on this computer; Phosphor starts it if it can."
+      : 'Spotify plays in the Spotify app (on this computer or any device signed in to your account), which Phosphor controls (Spotify Connect). Keep it open.',
+    desktop
+      ? 'The visualizers listen to what this computer plays (see System audio).'
+      : "The visualizers need the Spotify app's sound: share your entire screen with system audio (Windows, ChromeOS, macOS 14.2 or later), use an audio input, or on a phone the microphone. Sharing this tab won't hear it.",
+    'Phosphor follows the Spotify app by asking for its state about once a second, so a song ending or changing shows up a moment late, and fades into or out of a Spotify song are coarse.',
+    'While your Spotify app is in development mode it works for you and up to five people you add in the Spotify dashboard, and the app owner must have Premium.',
+  ];
+  private readonly pageLimits = [
     'Requires Spotify Premium. Spotify does not allow browser playback for free accounts.',
     'While your Spotify app is in development mode it works for you and up to five people you add in the Spotify dashboard, and the app owner must have Premium.',
     "Spotify's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so Chrome asks to share the tab the first time you play a song each session (one click on Allow).",
@@ -285,6 +534,20 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     'Saving to your Spotify library may be refused: since 2026 Spotify blocks changes from many personal (development-mode) apps. Playback is not affected.',
   ];
   readonly backend = new SpotifyBackend(this);
+
+  /**
+   * Spotify plays in the Spotify app (Spotify Connect) rather than in this
+   * page: always in the desktop app, whose Electron has no Widevine for
+   * Spotify's web player, and in the browser when chosen in Settings.
+   */
+  get connectMode(): boolean {
+    return Boolean(desktop) || settings.get('spotifyPlayback') === 'app';
+  }
+
+  /** The sound comes from another program, so sharing this tab can't hear it. */
+  get playsOutsidePage(): boolean {
+    return this.connectMode;
+  }
 
   sdk: SdkPlayer | null = null;
   last: SdkState | null = null;
@@ -299,6 +562,11 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
 
   private tokens: Tokens | null = readJson<Tokens>(TOKENS_KEY);
   private deviceId: string | null = null;
+  /**
+   * Bumped whenever the player is replaced (the page's own, or the Spotify
+   * app's): reports from the one before are ignored.
+   */
+  private generation = 0;
   private accountName = '';
   private problem = '';
   private connecting: Promise<void> | null = null;
@@ -325,6 +593,15 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   constructor() {
     super();
     settings.on('change', (patch) => {
+      if ('spotifyPlayback' in patch && this.sdk) {
+        // Switch players: the page's own, or the Spotify app.
+        this.generation++;
+        this.sdk.disconnect();
+        this.sdk = null;
+        this.deviceId = null;
+        if (this.tokens) void this.connect().catch(() => {});
+        this.emit('status', undefined);
+      }
       if (!('spotifyClientId' in patch)) return;
       // Tokens belong to the client ID they were issued for.
       if (this.tokens && this.tokens.clientId !== this.clientId) this.disconnect();
@@ -354,7 +631,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   status(): ServiceStatus {
     return {
       configured: this.clientId.length > 0,
-      connected: Boolean(this.sdk && this.deviceId),
+      connected: Boolean(this.sdk && (this.deviceId || this.sdk instanceof ConnectPlayer)),
       account: this.accountName || undefined,
       problem: this.problem || undefined,
     };
@@ -380,7 +657,8 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   private async doConnect() {
     this.setProblem('');
     if (!this.tokens || this.tokens.clientId !== this.clientId) await this.authorize();
-    await this.startSdk();
+    if (this.connectMode) this.startConnect();
+    else await this.startSdk();
     try {
       const me = await this.api<{ display_name?: string; id: string; product?: string }>('/me');
       this.accountName = me.display_name || me.id;
@@ -432,6 +710,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   }
 
   disconnect() {
+    this.generation++;
     this.sdk?.disconnect();
     this.sdk = null;
     this.deviceId = null;
@@ -477,6 +756,22 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     });
   }
 
+  /** Spotify Connect: follow and drive the Spotify app instead of a player in this page. */
+  private startConnect() {
+    if (this.sdk instanceof ConnectPlayer) return;
+    this.sdk?.disconnect();
+    this.deviceId = null;
+    const generation = ++this.generation;
+    this.sdk = new ConnectPlayer(
+      (path, init) => this.api(path, init),
+      (state) => {
+        if (generation === this.generation) this.onState(state);
+      },
+      () => generation === this.generation && Boolean(this.expectUri),
+    );
+    debug('spotify', 'playing through the Spotify app (Spotify Connect)');
+  }
+
   private async startSdk() {
     await this.loadSdk();
     if (this.sdk) return;
@@ -485,7 +780,12 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
       getOAuthToken: (cb) => void this.token().then(cb, () => cb('')),
       volume: this.volume,
     });
-    const on = <T>(event: string, callback: (payload: T) => void) => sdk.addListener(event, callback as (payload: never) => void);
+    const generation = ++this.generation;
+    const on = <T>(event: string, callback: (payload: T) => void) =>
+      sdk.addListener(event, ((payload: T) => {
+        // A player that has been replaced (switching to the Spotify app) may still report.
+        if (generation === this.generation) callback(payload);
+      }) as (payload: never) => void);
 
     const ready = new Promise<void>((resolve, reject) => {
       on<{ device_id: string }>('ready', ({ device_id }) => {
@@ -631,6 +931,19 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   /** Moves within a list Spotify is playing. False when there's nowhere to go. */
   async skipInList(direction: 1 | -1): Promise<boolean> {
     if (!this.expectContext || !this.sdk) return false;
+    if (this.sdk instanceof ConnectPlayer) {
+      // The Web API lists what comes next but not what came before; Spotify
+      // itself goes back a song, or to the start of the first.
+      if (direction === 1) {
+        const upcoming = (await this.sdk.getCurrentState().catch(() => null))?.track_window.next_tracks ?? [];
+        if (!upcoming.length) return false;
+      }
+      debug('spotify', `skip ${direction === 1 ? 'forward' : 'back'} within the list (Spotify app)`);
+      this.notePause();
+      this.furthest = 0;
+      await (direction === 1 ? this.sdk.nextTrack() : this.sdk.previousTrack());
+      return true;
+    }
     const state = (await this.sdk.getCurrentState().catch(() => null)) ?? this.last;
     const window = state?.track_window;
     if (!window) return false;
@@ -737,7 +1050,8 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   /** Starts a track on this tab's Spotify device. */
   async playUri(track: Track) {
     if (!track.ref) throw new Error('missing Spotify URI');
-    if (!this.sdk || !this.deviceId) await this.connect();
+    if (!this.sdk || (!this.deviceId && !(this.sdk instanceof ConnectPlayer))) await this.connect();
+    if (this.sdk instanceof ConnectPlayer) await this.findSpotifyApp(this.sdk);
     this.expectUri = track.ref;
     this.expectContext = track.context ? track.ref : null;
     this.contextSong = null;
@@ -765,6 +1079,25 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
       await new Promise((resolve) => setTimeout(resolve, 1200));
       await start();
     }
+    if (this.sdk instanceof ConnectPlayer) this.sdk.follow();
+  }
+
+  /** The Spotify app to play on. In the desktop app, starts it and waits for it if it isn't running. */
+  private async findSpotifyApp(player: ConnectPlayer) {
+    this.deviceId = (await player.findDevice()) || null;
+    if (!this.deviceId && desktop?.openSpotify) {
+      debug('spotify', 'no Spotify app is running; starting it');
+      desktop.openSpotify();
+      for (let i = 0; i < 20 && !this.deviceId; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        this.deviceId = (await player.findDevice()) || null;
+      }
+    }
+    if (!this.deviceId) {
+      throw new Error('Open Spotify on this computer (or on any device signed in to your account), then play the song again.');
+    }
+    debug('spotify', `playing on "${player.deviceName}"`);
+    this.emit('status', undefined);
   }
 
   // ------------------------------------------------------------- Web API

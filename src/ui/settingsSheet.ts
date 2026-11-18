@@ -3,6 +3,7 @@
 import type { App } from '../app/app';
 import { appBaseUrl, settings, type AutoHide } from '../app/settings';
 import type { Quality } from '../viz/renderer';
+import { desktop } from '../app/desktop';
 import { installer } from '../app/install';
 import { clear, h, icon } from './dom';
 import { CYCLE_CHOICES, segmented, select, toggle } from './gallery';
@@ -181,6 +182,20 @@ export function openSettings(app: App, section?: string) {
     h('h3', { text: 'Spotify', 'data-section': 'spotify' }),
     h('p', null, 'Needs a Spotify Premium account and a (free) app registered at developer.spotify.com. Full steps are in the README.'),
     field('Client ID', textInput('spotifyClientId', '32-character Client ID from your Spotify app')),
+    desktop
+      ? field('Plays in', h('span', { text: 'The Spotify app' }), "Spotify's web player can't run inside the desktop app, so Phosphor plays your songs in the Spotify app on this computer and controls it (Spotify Connect). Phosphor starts the app if it isn't open.")
+      : field(
+          'Plays in',
+          segmented<'page' | 'app'>(
+            [
+              ['page', 'This page'],
+              ['app', 'The Spotify app'],
+            ],
+            settings.get('spotifyPlayback'),
+            (spotifyPlayback) => settings.set({ spotifyPlayback }),
+          ),
+          'This page: Spotify\'s web player, here in the browser. The Spotify app: Phosphor controls the Spotify app on this computer, your phone or a speaker (Spotify Connect), for example where the web player won\'t run. Then the visualizers need the computer\'s sound, or on a phone the microphone.',
+        ),
     field(
       'Redirect URI',
       h('div', { class: 'input-row' }, h('input', { class: 'input', type: 'text', readonly: true, value: redirect }), copy),

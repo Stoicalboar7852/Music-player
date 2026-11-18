@@ -14,4 +14,6 @@ contextBridge.exposeInMainWorld('phosphorDesktop', {
     ipcRenderer.on('phosphor:command', listener);
     return () => ipcRenderer.removeListener('phosphor:command', listener);
   },
+  // Spotify plays in the Spotify app here (Spotify Connect): start it if it isn't running.
+  openSpotify: () => ipcRenderer.send('phosphor:open-spotify'),
 });

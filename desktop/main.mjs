@@ -284,9 +284,23 @@ function command(name) {
 
 const text = (value, max = 300) => (typeof value === 'string' ? value.slice(0, max) : '');
 
+/**
+ * Messages count only from Phosphor's own page in the main window. (A
+ * sign-in page from Spotify, Google or Apple can be shown in the window or a
+ * pop-up for a moment, and gets the same preload.)
+ */
+function fromPhosphor(event) {
+  if (event.sender !== win?.webContents) return false;
+  try {
+    return new URL(event.senderFrame?.url ?? '').origin === server?.origin;
+  } catch {
+    return false;
+  }
+}
+
 function setUpMessages() {
   ipcMain.on('phosphor:state', (event, next) => {
-    if (event.sender !== win?.webContents || !next || typeof next !== 'object') return;
+    if (!fromPhosphor(event) || !next || typeof next !== 'object') return;
     const before = state.playing;
     state = {
       title: text(next.title),
@@ -303,10 +317,14 @@ function setUpMessages() {
   });
 
   ipcMain.on('phosphor:levels', (event, next) => {
-    if (event.sender !== win?.webContents || !next || typeof next !== 'object') return;
+    if (!fromPhosphor(event) || !next || typeof next !== 'object') return;
     levels = next;
     levelsAt = performance.now();
     if (mini?.isVisible()) mini.webContents.send('mini:levels', next);
+  });
+
+  ipcMain.on('phosphor:open-spotify', (event) => {
+    if (fromPhosphor(event)) void shell.openExternal('spotify:').catch(() => {});
   });
 
   ipcMain.on('mini:command', (event, name) => {

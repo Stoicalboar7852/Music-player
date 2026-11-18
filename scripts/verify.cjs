@@ -1129,6 +1129,80 @@ async function spotify() {
   s = await state(page);
   check('...and back to Spotify hands the visuals to the shared tab audio again', s.input === 'capture' && !(await fake(() => window.__fakeSpotify.audio.paused)));
 
+  // ---- Spotify Connect: playing in the Spotify app instead of this page
+  await page.evaluate(() => {
+    window.__phosphor.player.clear();
+    window.__phosphor.settings.set({ spotifyPlayback: 'app' });
+  });
+  await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 10000 }).catch(() => {});
+  await queueSpotify(['short1', 'short2', 'short3']);
+  await page.waitForSelector('.toast.error', { timeout: 15000 }).catch(() => {});
+  const closedApp = (await page.locator('.toast.error').first().textContent().catch(() => '')) ?? '';
+  check('Spotify app mode, with the Spotify app closed: a plain explanation', /Open Spotify on this computer/.test(closedApp), closedApp.slice(0, 100));
+  await page.evaluate(() => document.querySelectorAll('.toast').forEach((t) => t.remove()));
+
+  mock.spotifyApp.open();
+  await queueSpotify(['short1', 'short2', 'short3']);
+  const following = await page
+    .waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 2, null, { timeout: 15000 })
+    .then(() => true, () => false);
+  let app = mock.spotifyApp.state();
+  check(
+    'with the Spotify app open, the song plays there (not in this page) and Phosphor follows it',
+    following && app.track === 'spotify:track:short1' && app.playing && (await fake(() => !window.__fakeSpotify?.track || window.__fakeSpotify.audio.paused)),
+    JSON.stringify({ app: app.track, playing: app.playing, at: Math.round(app.position) }),
+  );
+  await page.evaluate(() => window.__phosphor.player.pause());
+  await page.waitForTimeout(600);
+  const pausedThere = !mock.spotifyApp.state().playing;
+  await page.evaluate(() => window.__phosphor.player.play());
+  await page.evaluate(() => window.__phosphor.player.seek(1));
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.5));
+  await page.waitForTimeout(1500);
+  app = mock.spotifyApp.state();
+  const ui = await state(page);
+  check(
+    'Pause, Play, seeking and the volume reach the Spotify app',
+    pausedThere && app.playing && app.position < 4000 && app.volume === 50 && ui.playing,
+    JSON.stringify({ pausedThere, playing: app.playing, at: Math.round(app.position), volume: app.volume, commands: app.commands.slice(-5) }),
+  );
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.8));
+  const nextSong = await reachesIndex(1, 20000);
+  check('a song that plays to its end in the Spotify app starts the next one there', nextSong && mock.spotifyApp.state().track === 'spotify:track:short2', mock.spotifyApp.state().track);
+
+  mock.spotifyApp.autoplay(true);
+  await queueSpotify(['short1', 'short2']);
+  const pastAutoplay = await reachesIndex(1, 25000);
+  app = mock.spotifyApp.state();
+  check("...and when the Spotify app's autoplay picks something after it, Phosphor plays its own next song instead", pastAutoplay && app.track === 'spotify:track:short2', JSON.stringify({ track: app.track, commands: app.commands.slice(-4) }));
+  mock.spotifyApp.autoplay(false);
+
+  // A whole list played by the Spotify app.
+  await page.evaluate(async () => {
+    const { app, player } = window.__phosphor;
+    const service = app.services.find((x) => x.id === 'spotify');
+    const list = await service.tracksOf((await service.resolveLink('https://open.spotify.com/playlist/37i9dQZF1DXmockHits')).collections[0]);
+    player.clear();
+    player.add(list, { play: true });
+  });
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 1, null, { timeout: 15000 }).catch(() => {});
+  await page.evaluate(() => window.__phosphor.player.next());
+  const skipped = await page
+    .waitForFunction(() => window.__phosphor.player.current?.title === 'Short Song 2', null, { timeout: 8000 })
+    .then(() => true, () => false);
+  check('a Spotify list plays in the Spotify app, and Next moves within it', skipped && mock.spotifyApp.state().context === 'spotify:playlist:37i9dQZF1DXmockHits' && mock.spotifyApp.state().track === 'spotify:track:short2', JSON.stringify(mock.spotifyApp.state().commands.slice(-3)));
+  const banner = await page.locator('.banner').innerText().catch(() => '');
+  check("...and the banner asks for the computer's sound, since this tab can't hear the Spotify app", /plays in its own app/.test(banner) && /Share system audio/.test(banner), banner.replace(/\s+/g, ' ').slice(0, 110));
+  await page.evaluate(() => {
+    window.__phosphor.player.clear();
+    window.__phosphor.settings.set({ spotifyPlayback: 'page' });
+  });
+  mock.spotifyApp.quit();
+  const backToPage = await page
+    .waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').status().connected && !window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode, null, { timeout: 15000 })
+    .then(() => true, () => false);
+  check("switching back to this page's player reconnects Spotify's web player", backToPage);
+
   // ---- staying signed in, and signing out
   const signIns = mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length;
   await page.reload();
@@ -2016,6 +2090,11 @@ async function desktopApp(browser) {
   await page.waitForTimeout(300);
   const panel = await page.locator('.sheet').innerText();
   check('System audio explains the Mac permission and the fallback, instead of the share dialog', /Listen to this computer/.test(panel) && /Screen & System Audio Recording/.test(panel) && !/What to pick in the share dialog/.test(panel));
+  await page.evaluate(() => window.__phosphor.app.openSheet('settings', 'spotify'));
+  await page.waitForTimeout(300);
+  const spotifySettings = await page.locator('.sheet').innerText();
+  const connect = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode);
+  check("Spotify plays through the Spotify app in the desktop app (Electron has no Widevine for its web player), and Settings says so", connect && /Plays in\s*The Spotify app/.test(spotifySettings), spotifySettings.match(/Plays in[^\n]*\n?[^\n]*/)?.[0]);
   await context.close();
 
   // The mini player, with its bridge stubbed the way desktop/mini-preload.cjs provides it.

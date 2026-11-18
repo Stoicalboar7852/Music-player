@@ -180,6 +180,45 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
   const savedUris = new Set();
   // "Mock Mix": removed and local entries included, as real playlists have. Tests add to it.
   const pl1Items = [{ item: TRACKS[3] }, { item: null }, { item: { ...TRACKS[4], is_local: true } }, { item: TRACKS[5] }];
+  // The Spotify app on this computer, as a Spotify Connect device (for
+  // Phosphor's "play in the Spotify app" mode). It keeps its own clock: songs
+  // play through, a list moves on by itself, and at the end of a single song
+  // it either stops back at the start or (with autoplay) starts its own pick.
+  // The test opens and closes it, like starting and quitting the app.
+  const RADIO = TRACKS[11];
+  const sApp = { open: false, id: 'mock-app-device', name: 'Mock MacBook', track: null, context: null, playing: false, positionAt: 0, startedAt: 0, volume: 70, autoplay: false, commands: [] };
+  const appPosition = () => (sApp.playing ? Math.min(sApp.track.duration_ms, sApp.positionAt + (Date.now() - sApp.startedAt)) : sApp.positionAt);
+  const appSeek = (ms) => {
+    sApp.positionAt = ms;
+    sApp.startedAt = Date.now();
+  };
+  /** Moves the clock on: the end of a song leads to the next in the list, autoplay, or a stop. */
+  const appTick = () => {
+    for (let guard = 0; guard < 5 && sApp.playing && sApp.track; guard++) {
+      const over = sApp.positionAt + (Date.now() - sApp.startedAt) - sApp.track.duration_ms;
+      if (over < 0) return;
+      if (sApp.context && sApp.context.index + 1 < sApp.context.tracks.length) {
+        sApp.context.index++;
+        sApp.track = sApp.context.tracks[sApp.context.index];
+        sApp.startedAt = Date.now() - over;
+        sApp.positionAt = 0;
+      } else if (sApp.autoplay) {
+        sApp.context = null;
+        sApp.track = RADIO;
+        sApp.startedAt = Date.now() - over;
+        sApp.positionAt = 0;
+      } else {
+        // Like Spotify: stopped, back at the start (of the list, for a list).
+        if (sApp.context) {
+          sApp.context.index = 0;
+          sApp.track = sApp.context.tracks[0];
+        }
+        sApp.playing = false;
+        sApp.positionAt = 0;
+      }
+    }
+  };
+  const appDevice = () => ({ id: sApp.id, is_active: Boolean(sApp.track), is_private_session: false, is_restricted: false, name: sApp.name, type: 'Computer', volume_percent: sApp.volume, supports_volume: true });
   const json = (route, status, body) => route.fulfill({ status, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: JSON.stringify(body) });
   const preflight = (route) =>
     route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*', 'access-control-allow-methods': 'GET,PUT,POST,DELETE,OPTIONS' } });
@@ -309,6 +348,84 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
       const t = [...TRACKS, ...SHORT].find((x) => x.id === path.slice(8));
       return t ? json(route, 200, t) : json(route, 404, { error: { status: 404, message: 'Not found' } });
     }
+    // ---- Spotify Connect: the Spotify app as a device
+    const noContent = () => route.fulfill({ status: 204, headers: { 'access-control-allow-origin': '*' } });
+    const toApp = sApp.open && (url.searchParams.get('device_id') === sApp.id || (!url.searchParams.get('device_id') && sApp.track));
+    if (path === '/me/player/devices') {
+      if (needs('user-read-playback-state')) return insufficient();
+      return json(route, 200, { devices: sApp.open ? [appDevice()] : [] });
+    }
+    if (path === '/me/player' && req.method() === 'GET') {
+      if (needs('user-read-playback-state')) return insufficient();
+      appTick();
+      if (!sApp.open || !sApp.track) return noContent();
+      return json(route, 200, {
+        device: appDevice(),
+        is_playing: sApp.playing,
+        progress_ms: appPosition(),
+        timestamp: Date.now(),
+        context: sApp.context ? { uri: sApp.context.uri, type: 'playlist' } : null,
+        item: sApp.track,
+        currently_playing_type: 'track',
+        shuffle_state: false,
+        repeat_state: 'off',
+      });
+    }
+    if (path === '/me/player/queue') {
+      appTick();
+      if (!sApp.track) return json(route, 200, { currently_playing: null, queue: [] });
+      const rest = sApp.context ? sApp.context.tracks.slice(sApp.context.index + 1) : [];
+      return json(route, 200, { currently_playing: sApp.track, queue: rest });
+    }
+    if (toApp && path.startsWith('/me/player/')) {
+      if (needs('user-modify-playback-state')) return insufficient();
+      appTick();
+      const command = `${req.method()} ${path.slice(11)}${url.searchParams.get('position_ms') ? ` ${url.searchParams.get('position_ms')}` : ''}${url.searchParams.get('volume_percent') ? ` ${url.searchParams.get('volume_percent')}` : ''}`;
+      sApp.commands.push(command);
+      if (path === '/me/player/play' && req.method() === 'PUT') {
+        const body = JSON.parse(req.postData() || '{}');
+        if (body.context_uri) {
+          if (body.context_uri !== MADE_BY_SPOTIFY.uri) return json(route, 400, { error: { status: 400, message: 'Invalid context uri' } });
+          sApp.context = { uri: body.context_uri, tracks: MADE_BY_SPOTIFY.tracks, index: 0 };
+          sApp.track = sApp.context.tracks[0];
+          appSeek(0);
+        } else if (body.uris) {
+          const track = [...TRACKS, ...SHORT].find((t) => t.uri === body.uris[0]);
+          if (!track) return json(route, 400, { error: { status: 400, message: 'Invalid track uri' } });
+          sApp.context = null;
+          sApp.track = track;
+          appSeek(0);
+        } else {
+          if (!sApp.track) return json(route, 404, { error: { status: 404, message: 'No active device found' } });
+          appSeek(appPosition());
+        }
+        sApp.playing = true;
+        return noContent();
+      }
+      if (path === '/me/player/pause' && req.method() === 'PUT') {
+        sApp.positionAt = appPosition();
+        sApp.playing = false;
+        return noContent();
+      }
+      if (path === '/me/player/seek' && req.method() === 'PUT') {
+        appSeek(Math.max(0, Math.min(sApp.track?.duration_ms ?? 0, Number(url.searchParams.get('position_ms')) || 0)));
+        return noContent();
+      }
+      if (path === '/me/player/volume' && req.method() === 'PUT') {
+        sApp.volume = Number(url.searchParams.get('volume_percent'));
+        return noContent();
+      }
+      if ((path === '/me/player/next' || path === '/me/player/previous') && req.method() === 'POST') {
+        const step = path.endsWith('next') ? 1 : -1;
+        if (sApp.context) {
+          sApp.context.index = Math.max(0, Math.min(sApp.context.tracks.length - 1, sApp.context.index + step));
+          sApp.track = sApp.context.tracks[sApp.context.index];
+        }
+        appSeek(0);
+        return noContent();
+      }
+    }
+
     if (path === '/me/player/play' && req.method() === 'PUT') {
       const body = JSON.parse(req.postData() ?? '{}');
       log.playRequests.push({ device: url.searchParams.get('device_id'), uris: body.uris, context: body.context_uri });
@@ -341,6 +458,16 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
     /** Refuse library changes with 403, as Spotify does for many development-mode apps. */
     refuseWrites: (on) => (refuseWrites = on),
     expireTokens: () => validTokens.clear(),
+    /** The simulated Spotify app: open or quit it, autoplay at the end, and what it was told to do. */
+    spotifyApp: {
+      open: () => (sApp.open = true),
+      quit: () => Object.assign(sApp, { open: false, track: null, context: null, playing: false }),
+      autoplay: (on) => (sApp.autoplay = on),
+      state: () => {
+        appTick();
+        return { open: sApp.open, track: sApp.track?.uri ?? null, playing: sApp.playing, position: appPosition(), context: sApp.context?.uri ?? null, volume: sApp.volume, commands: [...sApp.commands] };
+      },
+    },
     /** Adds a song to "Mock Mix" on the simulated Spotify side, as if the user did it in Spotify. */
     addToMockMix: (index) => {
       const entry = { item: TRACKS[index] };

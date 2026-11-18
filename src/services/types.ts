@@ -49,6 +49,8 @@ export interface MusicService {
   readonly backend: Backend;
   /** Plain statement of what this integration can and cannot do. */
   readonly limits: string[];
+  /** The music plays in another program (e.g. the Spotify app), so sharing this tab can't hear it. */
+  readonly playsOutsidePage?: boolean;
   /** What the paste-a-link box accepts, e.g. "Spotify track, album or playlist link". */
   readonly linkHint: string;
   /** False for services that work without signing in (no Disconnect button). */

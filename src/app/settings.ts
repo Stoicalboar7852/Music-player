@@ -29,6 +29,8 @@ export interface Settings {
   shuffle: boolean;
   repeat: RepeatMode;
   spotifyClientId: string;
+  /** Where Spotify plays: in this page (the Web Playback SDK) or in the Spotify app (Spotify Connect). */
+  spotifyPlayback: 'page' | 'app';
   appleDeveloperToken: string;
   youtubeApiKey: string;
   /** Google OAuth client ID (web application), for signing in to YouTube. */
@@ -52,6 +54,7 @@ const DEFAULTS: Settings = {
   shuffle: false,
   repeat: 'off',
   spotifyClientId: '',
+  spotifyPlayback: 'page',
   appleDeveloperToken: '',
   youtubeApiKey: '',
   googleClientId: '',

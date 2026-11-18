@@ -243,16 +243,16 @@ const listen = () =>
     () => app.toast('Listening through the microphone.'),
     (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
   );
-const banner = h(
-  'div',
-  { class: 'banner glass', hidden: true },
-  bannerText,
-  desktop
-    ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Listen to this computer')
-    : capture.supported
-      ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
-      : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen'),
-);
+const shareTab = desktop
+  ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Listen to this computer')
+  : capture.supported
+    ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
+    : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen');
+// For music playing in another program (Spotify Connect), in a browser.
+const shareSystem = capture.supported
+  ? h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Share system audio')
+  : h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: listen }, icon('mic', 16), 'Listen');
+const banner = h('div', { class: 'banner glass', hidden: true }, bannerText, shareTab, shareSystem);
 
 const dropzone = h('div', { class: 'dropzone' }, 'Drop to add to the queue');
 
@@ -303,7 +303,18 @@ function route() {
 
   const needsCapture = Boolean(track && track.source !== 'local' && !capture.state.active);
   banner.hidden = !needsCapture;
-  if (needsCapture && track) {
+  const elsewhere = Boolean(track && app.services.find((s) => s.id === track.source)?.playsOutsidePage);
+  shareTab.hidden = elsewhere && !desktop;
+  shareSystem.hidden = !(elsewhere && !desktop);
+  if (needsCapture && track && elsewhere && !desktop) {
+    // Spotify Connect in the browser: the sound comes from the Spotify app, not this tab.
+    bannerText.replaceChildren(
+      h('strong', { text: `${SOURCE_NAMES[track.source]} plays in its own app, ` }),
+      capture.supported
+        ? "so the visualizers need this computer's sound: share your entire screen with system audio switched on."
+        : 'so the visualizers can listen through the microphone.',
+    );
+  } else if (needsCapture && track) {
     bannerText.replaceChildren(
       h('strong', { text: `${SOURCE_NAMES[track.source]} audio is protected, ` }),
       desktop
@@ -329,8 +340,10 @@ function maybeAutoShare() {
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (!activation?.isActive) return;
   autoShareTried = true;
-  // The desktop app hears the whole computer, without a dialog.
-  void app.startCapture({ thisTab: !desktop });
+  // The desktop app hears the whole computer, without a dialog. Music playing
+  // in another program (Spotify Connect) needs the computer's sound too.
+  const elsewhere = Boolean(app.services.find((s) => s.id === track.source)?.playsOutsidePage);
+  void app.startCapture({ thisTab: !desktop && !elsewhere });
 }
 
 player.on('track', (track) => {
