@@ -272,7 +272,7 @@ While music plays, the browser tab's icon becomes a tiny live visualizer (four b
 
 <br clear="right">
 
-**Getting it.** GitHub Actions builds the installers whenever the app changes (`.github/workflows/desktop.yml`): open the repository's **Actions** tab, then the latest **Desktop app** run, and download **Phosphor-macOS** (a `.dmg` for Apple silicon, `arm64`, and one for Intel Macs, `x64`) or **Phosphor-Windows** (a `setup.exe`). Pushing a version tag such as `v2.0.0` also attaches them to a GitHub release.
+**Getting it.** GitHub Actions builds the installers whenever the app changes (`.github/workflows/desktop.yml`): open the repository's **Actions** tab, then the latest **Desktop app** run, and download **Phosphor-macOS** (a `.dmg` for Apple silicon, `arm64`, and one for Intel Macs, `x64`) or **Phosphor-Windows** (a `setup.exe`). A run's downloads are kept for 14 days. Pushing a version tag such as `v2.0.0` also attaches them to a permanent GitHub release.
 
 The installers aren't signed with a paid certificate, so the first launch needs a click more:
 
@@ -303,7 +303,7 @@ npm run desktop
 - **Spotify** plays in the Spotify app, which Phosphor controls (see [Spotify](#spotify), *Playing in the Spotify app instead*): Spotify's web player needs Widevine, the DRM module Chrome includes and plain Electron doesn't (only a separately licensed Electron build has it, through a signing service). Keep the Spotify app open; Phosphor starts it if it isn't running. The visualizers hear it through system audio.
 - **Apple Music**'s web player needs Widevine too, so it doesn't play inside the desktop app. Use it in the browser, or play it in the Music app and turn on **System audio**.
 
-**How it was tested.** I couldn't run Electron in my build environment (its download is blocked there). What was tested there: the local server and the icon drawing (`node desktop/test.mjs`), and the page side of the app in Chromium with the app's bridge stood in for (the levels and song it reports, the commands it takes, the analysis carrying on when the window is hidden, the desktop wording) plus the mini player page (`verify.cjs`, part `desktop`). The packaged app itself is smoke-tested on macOS and Windows by the workflow (`desktop/smoke-test.mjs`): the window, the local server, the bridge, the demo, the menu bar or tray icon animating, Play/Pause from it, and the mini player. Whether system audio arrives is reported there but not required, since a CI machine may have no sound device and, on macOS, no screen-recording permission. On Windows everything passed, system audio included (the capture came with its audio track, without a dialog). The macOS job hadn't run yet when this was written (see [Status](#status)).
+**How it was tested.** I couldn't run Electron in my build environment (its download is blocked there). What was tested there: the local server and the icon drawing (`node desktop/test.mjs`), and the page side of the app in Chromium with the app's bridge stood in for (the levels and song it reports, the commands it takes, the analysis carrying on when the window is hidden, the desktop wording) plus the mini player page (`verify.cjs`, part `desktop`). The packaged app itself is smoke-tested on macOS and Windows by the workflow (`desktop/smoke-test.mjs`): the window, the local server, the bridge, the demo, the menu bar or tray icon animating, Play/Pause from it, and the mini player. Whether system audio arrives is reported there but not required, since a CI machine may have no sound device and, on macOS, no screen-recording permission. On Windows everything passed, system audio included (the capture came with its audio track, without a dialog). On macOS everything passed except that system audio couldn't be tried: the capture waits for macOS's permission prompt, which a CI machine can't answer.
 
 ## Troubleshooting
 
@@ -475,9 +475,7 @@ It checks:
 
 **Working and verified in a real browser with audio:** local files (all formats listed, tags, embedded and folder cover art, drag and drop, folders), the queue and every control and shortcut, media keys, fullscreen with idle fade, all twenty-five visualizers (each one's reaction to bass, mids, treble and beats measured), the gallery and auto-cycle, system and tab audio capture, beat tracking against signals with known beats, crossfades and DJ-style mixes between local files, the installable app (installability, offline start), and on an emulated iPhone the phone layout and the microphone.
 
-**Verified on real Windows, by GitHub Actions:** the desktop app's installer builds, and the packaged app opens Phosphor, plays the demo, animates its tray icon, takes Play/Pause from it, opens the mini player, and captures the computer's sound without a dialog.
-
-**The macOS desktop app** is built and smoke-tested by the same workflow on a Mac, but at the time of writing that job hadn't run yet: the first time, GitHub never assigned it a machine and it was cancelled. It runs with every change to the app, or from **Actions → Desktop app → Run workflow**.
+**Verified on real Windows and macOS machines, by GitHub Actions:** the desktop app's installers build (a Windows setup.exe; Mac disk images for Apple silicon and Intel), and on each system the packaged app opens Phosphor, plays the demo, animates its tray or menu bar icon, takes Play/Pause from it, opens the mini player, and is set to play Spotify through the Spotify app. On Windows it also captured the computer's sound without a dialog. On the Mac that step waits for the Screen & System Audio Recording permission, which nobody can grant on a CI machine, so system audio in the Mac app is still unverified.
 
 **Needs your credentials before it can be tested against the real service:**
 

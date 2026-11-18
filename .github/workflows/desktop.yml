@@ -26,9 +26,11 @@ on:
 permissions:
   contents: write
 
+# A newer push waits for the run in progress rather than cancelling it (macOS
+# machines can take a while to come free, and a cancelled run builds nothing).
 concurrency:
   group: desktop-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:

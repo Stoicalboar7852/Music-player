@@ -1049,6 +1049,14 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   /** Starts a track on this tab's Spotify device. */
   async playUri(track: Track) {
     if (!track.ref) throw new Error('missing Spotify URI');
+    // Forget the song before at once: while the next one starts, reports about
+    // the old one are ignored, and the position reads 0 rather than where the
+    // old song was.
+    this.expectUri = null;
+    this.expectContext = null;
+    this.last = null;
+    this.furthest = 0;
+    this.sawPlaying = false;
     if (!this.sdk || (!this.deviceId && !(this.sdk instanceof ConnectPlayer))) await this.connect();
     if (this.sdk instanceof ConnectPlayer) await this.findSpotifyApp(this.sdk);
     this.expectUri = track.ref;
