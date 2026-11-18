@@ -98,6 +98,13 @@ export function openSettings(app: App, section?: string) {
     ),
     field('Show frame rate', toggle(settings.get('showStats'), 'Show frame rate', (showStats) => settings.set({ showStats }))),
 
+    h('h3', { text: 'Streaming audio' }),
+    field(
+      'Ask to share this tab automatically',
+      toggle(settings.get('autoShare'), 'Ask to share this tab automatically', (autoShare) => settings.set({ autoShare })),
+      'Streaming services protect their audio, so the visualizers listen to this tab. When you start a streaming song, Chrome asks once to share the tab; click Allow. The desktop app does this without asking.',
+    ),
+
     h('h3', { text: 'Spotify', 'data-section': 'spotify' }),
     h('p', null, 'Needs a Spotify Premium account and a (free) app registered at developer.spotify.com. Full steps are in the README.'),
     field('Client ID', textInput('spotifyClientId', '32-character Client ID from your Spotify app')),

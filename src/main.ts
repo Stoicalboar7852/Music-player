@@ -1,7 +1,7 @@
 import './styles.css';
 
 import type { App, SheetName } from './app/app';
-import { browserLimitation, detectBrowser } from './app/browser';
+import { detectBrowser } from './app/browser';
 import { settings } from './app/settings';
 import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
@@ -16,7 +16,7 @@ import { handleSpotifyCallback, SpotifyService } from './services/spotify';
 import { YouTubeService } from './services/youtube';
 import type { MusicService } from './services/types';
 import { createDock } from './ui/dock';
-import { h, icon } from './ui/dom';
+import { h } from './ui/dom';
 import { openGallery } from './ui/gallery';
 import { installShortcuts, openShortcuts } from './ui/keys';
 import { createQueue } from './ui/queue';
@@ -25,6 +25,7 @@ import { createSheets } from './ui/sheets';
 import { openSources } from './ui/sources';
 import { createToasts } from './ui/toast';
 import { createTopbar } from './ui/topbar';
+import { createWelcome } from './ui/welcome';
 import type { RGB } from './viz/palette';
 import { Renderer } from './viz/renderer';
 
@@ -171,22 +172,7 @@ const dock = createDock(app);
 const queue = createQueue(app);
 
 // Shown instead of a silent black screen when there is nothing to visualize yet.
-const welcome = h(
-  'div',
-  { class: 'welcome glass' },
-  h('h1', { text: 'Put some music on' }),
-  h('p', { text: 'Drop audio files anywhere on this window, or pick a source. Then press F and sit back.' }),
-  h(
-    'div',
-    { class: 'actions' },
-    h('button', { class: 'btn primary', type: 'button', onClick: () => app.openFilePicker() }, icon('file', 18), 'Open files'),
-    h('button', { class: 'btn', type: 'button', onClick: () => void app.openFolderPicker() }, icon('folder', 18), 'Open folder'),
-    h('button', { class: 'btn', type: 'button', onClick: () => app.openSheet('sources', 'capture') }, icon('capture', 18), 'System audio'),
-    h('button', { class: 'btn', type: 'button', onClick: () => void app.playDemo() }, icon('sparkles', 18), 'Play demo'),
-  ),
-  browserLimitation() ? h('p', { class: 'note warn', style: 'text-align:left;margin:0 auto 14px', text: browserLimitation()! }) : null,
-  h('small', null, 'Press ', h('kbd', { text: '?' }), ' for keyboard shortcuts'),
-);
+const welcome = createWelcome(app);
 
 // Streaming services are DRM-protected: their audio only reaches the
 // visualizers once the user shares this tab's sound.
@@ -200,7 +186,7 @@ const banner = h(
 
 const dropzone = h('div', { class: 'dropzone' }, 'Drop to add to the queue');
 
-hud.append(h('div', { class: 'scrim-top' }), h('div', { class: 'scrim-bottom' }), topbar.el, welcome, queue.el, banner, dock.el);
+hud.append(h('div', { class: 'scrim-top' }), h('div', { class: 'scrim-bottom' }), topbar.el, welcome.el, queue.el, banner, dock.el);
 root.append(hud, toasts.el, dropzone, fileInput, folderInput);
 
 // --------------------------------------------------------------- behaviour
@@ -253,8 +239,23 @@ function route() {
       'so the visualizers listen to this tab instead. Share its audio to bring them to life.',
     );
   }
-  welcome.classList.toggle('gone', player.queue.length > 0 || capture.state.active);
+  welcome.hidden = player.queue.length > 0 || capture.state.active;
   document.title = track ? `${track.title}${track.artist ? ` · ${track.artist}` : ''} — Phosphor` : 'Phosphor';
+}
+
+// Streaming songs can only be visualized from shared tab audio. When one is
+// started or resumed by a click (and the browser still counts that click as
+// recent), open the share dialog straight away instead of leaving the user to
+// find the banner. Only once per session: if they cancel, the banner stays.
+let autoShareTried = false;
+function maybeAutoShare() {
+  const track = player.current;
+  if (!track || track.source === 'local' || !player.playing || capture.state.active || autoShareTried) return;
+  if (!settings.get('autoShare') || !capture.supported) return;
+  const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  if (!activation?.isActive) return;
+  autoShareTried = true;
+  void app.startCapture({ thisTab: true });
 }
 
 player.on('track', (track) => {
@@ -273,6 +274,9 @@ player.on('error', (message) => toasts.show(message, 'error'));
 // A capture that hears nothing is usually a permission problem on macOS, or
 // simply nothing playing yet. Say which to check rather than leaving it silent.
 let silenceTimer = 0;
+player.on('change', maybeAutoShare);
+player.on('track', maybeAutoShare);
+
 capture.on('change', (state) => {
   route();
   window.clearInterval(silenceTimer);

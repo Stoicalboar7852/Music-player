@@ -258,7 +258,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   readonly limits = [
     'Requires Spotify Premium. Spotify does not allow browser playback for free accounts.',
     'While your Spotify app is in development mode it works for you and up to five people you add in the Spotify dashboard, and the app owner must have Premium.',
-    "Spotify's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so you will be asked to share the tab once per session.",
+    "Spotify's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so Chrome asks to share the tab the first time you play a song each session (one click on Allow).",
     'Volume changes here are applied by Spotify before the audio is captured: at very low volume the visuals get less signal, and muting silences them. Use your system volume to listen quietly.',
     'Search returns up to 10 results of each kind (a limit Spotify applies to development-mode apps).',
   ];

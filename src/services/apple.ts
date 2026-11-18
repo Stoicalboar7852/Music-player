@@ -131,7 +131,7 @@ export class AppleMusicService extends Emitter<{ status: void }> implements Musi
     'Needs a developer token, which can only be made with a paid Apple Developer Program membership (the MusicKit key it is signed with comes from there). Tokens expire after at most six months.',
     'Full tracks need an Apple Music subscription. Without one, Apple only plays 30-second previews.',
     "You sign in in Apple's own window; this app never sees your Apple ID.",
-    "Apple Music's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so you will be asked to share the tab once per session.",
+    "Apple Music's audio is DRM-protected and cannot be read by the page. The visualizers react to this tab's shared audio instead, so Chrome asks to share the tab the first time you play a song each session (one click on Allow).",
     'Volume is applied by Apple before the audio is captured, so very low volume gives the visuals less to work with. Use your system volume to listen quietly.',
   ];
   readonly backend = new AppleBackend(this);

@@ -259,6 +259,19 @@ async function player(browser) {
   };
 
   check('starts on the welcome card with nothing playing', await page.isVisible('.welcome:not(.gone)'));
+  const tiles = await page.$$eval('.service-tile', (els) => els.map((e) => `${e.dataset.service}: ${e.querySelector('.service-state').textContent}`));
+  check('the first screen offers Spotify, Apple Music and YouTube with their state', tiles.join() === 'spotify: Set up (needs Premium),apple: Set up,youtube: Paste a link', tiles.join(' | '));
+  await page.click('.service-tile[data-service="spotify"]');
+  await page.waitForTimeout(500);
+  check('an unconfigured service tile opens its setup', await page.isVisible('.sheet[aria-label="Settings"] >> text=Client ID'));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  await page.click('.service-tile[data-service="youtube"]');
+  await page.waitForTimeout(500);
+  check('a ready service tile opens that service', await page.isVisible('.tab.active[data-id="youtube"]'));
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  await page.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
   await page.screenshot({ path: path.join(SHOTS, 'ui-welcome.png') });
 
   // ---- files, tags and artwork
@@ -591,7 +604,7 @@ async function spotify() {
   const mock = await installSpotifyMock(context);
   const page = await open(context);
   await page.evaluate(() => {
-    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.settings.set({ quality: 'low', autoShare: false });
     window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
   });
   const fake = (fn) => page.evaluate(fn);
@@ -610,6 +623,7 @@ async function spotify() {
   await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 15000 }).catch(() => {});
   let st = await svc();
   check('sign-in completes and the player device comes up', st.connected, JSON.stringify(st));
+  check("the first screen's Spotify tile shows the connection", (await page.textContent('.service-tile[data-service="spotify"] .service-state')) === 'Connected as Mock Listener');
   check('the authorize request is well formed (PKCE S256, loopback redirect, streaming scope)', mock.log.authorize && mock.log.authorizeProblems.length === 0, JSON.stringify(mock.log.authorizeProblems));
   check('the code verifier matches the challenge (checked the way the server does)', mock.log.pkceVerified);
   check('no client secret is ever sent', mock.log.tokenRequests.every((r) => !('client_secret' in r)));
@@ -811,7 +825,7 @@ async function apple() {
   await installAppleMock(context);
   const page = await open(context);
   await page.evaluate(() => {
-    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.settings.set({ quality: 'low', autoShare: false });
     window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
   });
   const svc = () => page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'apple').status());
@@ -1012,11 +1026,11 @@ async function youtube() {
   const box = await page.locator('.yt-frame').boundingBox();
   check('the YouTube player is visible and at least 200x200, as YouTube requires', Boolean(box && box.width >= 200 && box.height >= 200), box ? `${box.width}x${box.height}` : 'hidden');
 
-  // ---- visuals through tab sharing
-  await page.waitForTimeout(600);
-  check('the embedded player is inaudible to the analysers by itself', (await state(page)).level < 0.01);
-  await page.click(".banner >> text=Share this tab's audio");
+  // ---- visuals: the click on Play opened the share dialog straight away
+  // (accepted automatically in this test run), with no banner to find.
   await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).catch(() => {});
+  s = await state(page);
+  check('starting a streaming song with a click opens the share dialog at once', s.capture.active && s.capture.label === "This tab's audio" && !(await page.isVisible('.banner:not([hidden])')), JSON.stringify(s.capture));
   await page.waitForTimeout(3000);
   s = await state(page);
   check("after sharing, YouTube's audio drives the visualizers", s.input === 'capture' && s.level > 0.05, `level ${s.level.toFixed(2)}`);
@@ -1088,6 +1102,16 @@ async function youtube() {
   await queueVideos(['shortclip02', 'shortclip03'], true);
   check('if a player never reports the end, the safety net moves on a few seconds later', await videoAt(1, 30000));
   await page.evaluate(() => (window.__fakeYouTubeNoEnded = false));
+
+  // ---- once per session: after the user stops sharing, a click doesn't reopen the dialog
+  await page.click('.chip .icon-btn');
+  await page.waitForTimeout(800);
+  await page.keyboard.press('q');
+  await page.waitForTimeout(400);
+  await page.click('.drawer .row >> nth=0');
+  await page.waitForTimeout(1500);
+  check('after the user stops sharing, playing another song shows the banner instead of asking again', !(await state(page)).capture.active && (await page.isVisible('.banner:not([hidden])')));
+  await page.keyboard.press('q');
 
   // ---- with an API key
   await page.evaluate(() => window.__phosphor.settings.set({ youtubeApiKey: 'mock-api-key' }));

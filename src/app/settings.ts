@@ -18,6 +18,8 @@ export interface Settings {
   quality: Quality;
   showStats: boolean;
   autoHide: AutoHide;
+  /** Open the share-this-tab dialog when a streaming song is started by a click. */
+  autoShare: boolean;
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
@@ -35,6 +37,7 @@ const DEFAULTS: Settings = {
   quality: 'auto',
   showStats: false,
   autoHide: 'fullscreen',
+  autoShare: true,
   volume: 0.8,
   shuffle: false,
   repeat: 'off',
