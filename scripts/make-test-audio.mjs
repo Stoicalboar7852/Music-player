@@ -15,6 +15,8 @@ mkdirSync(outDir, { recursive: true });
 // The same synth the app ships as its demo track (Node strips the types on import).
 const { synthesizeDemo, encodeWav } = await import('../src/audio/demoSynth.ts');
 const wav = join(outDir, 'signal-check.wav');
+// The same piece at 118 BPM, for the tests that mix one song into another.
+writeFileSync(join(outDir, 'signal-check-118.wav'), encodeWav(synthesizeDemo(44100, 118)));
 writeFileSync(wav, encodeWav(synthesizeDemo(44100)));
 
 const ff = (args) => execFileSync('ffmpeg', ['-y', '-loglevel', 'error', ...args], { stdio: 'inherit' });

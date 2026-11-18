@@ -16,6 +16,9 @@
 //                auto-cycle, idle fade, drag and drop, error handling
 //   playlists    Phosphor playlists: mixed sources, nesting, loops refused,
 //                play modes, local files reopened after a reload, export/import
+//   transitions  between songs: an equal-power crossfade, beat-matched mixes
+//                (tempo, beat lock, bass swap, filter rise), local into
+//                YouTube, and two YouTube songs in a row
 //   capture      real getDisplayMedia capture of another tab and of this tab
 //   spotify      the Spotify integration against a local simulation of
 //                Spotify (see scripts/mocks): sign-in, search, playback, queue
@@ -37,7 +40,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,capture,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -1580,6 +1583,162 @@ function rhythm() {
   if (run.status !== 0 && !lines.some((l) => /FAIL/.test(l))) check('rhythm: the ground-truth test ran', false, (run.stderr ?? '').slice(0, 300));
 }
 
+// ---------------------------------------------------------------- transitions
+
+async function transitions(browser) {
+  console.log('\n== Between songs: crossfades and mixes ==');
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  await installYouTubeMock(context);
+  const page = await open(context);
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low', autoShare: false, songCrossfade: 3, transitionMode: 'crossfade', repeat: 'off', shuffle: false });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+
+  /** Samples both decks every 100 ms for `ms`: which are playing, their gains and filters. */
+  const watchDecks = (ms) =>
+    page.evaluate(async (ms) => {
+      const { engine, player } = window.__phosphor;
+      const out = [];
+      const end = performance.now() + ms;
+      while (performance.now() < end) {
+        out.push({
+          t: performance.now(),
+          index: player.currentIndex,
+          decks: engine.decks.map((d) => ({ playing: !d.element.paused && !!d.element.getAttribute('src'), gain: d.gain.gain.value, low: d.low.gain.value, high: d.high.frequency.value, rate: d.element.playbackRate, pitchKept: d.element.preservesPitch, pos: d.element.currentTime })),
+        });
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return out;
+    }, ms);
+
+  // ---- a plain crossfade between two local files
+  await page.setInputFiles('#file-input', [path.join(AUDIO, 'signal-check-short.mp3'), path.join(AUDIO, 'signal-check.flac')]);
+  await page.waitForFunction(() => window.__phosphor.player.queue.length === 2);
+  await page.evaluate(() => void window.__phosphor.player.playTrack(window.__phosphor.player.queue[0].id));
+  await page.waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 0.3, null, { timeout: 10000 });
+  let samples = await watchDecks(10000);
+  const both = samples.filter((s) => s.decks[0].playing && s.decks[1].playing);
+  check('with a 3 s crossfade, the next local song starts before the first one ends', both.length >= 15, `${both.length * 100} ms of overlap`);
+  const mid = both[Math.floor(both.length / 2)];
+  const power = mid ? mid.decks[0].gain ** 2 + mid.decks[1].gain ** 2 : 0;
+  check('...the fade is equal-power: the loudness holds steady through it', Math.abs(power - 1) < 0.2, power.toFixed(2));
+  const indices = [...new Set(samples.map((s) => s.index))];
+  check('...the queue moves on exactly once, and the first song stops after the fade', indices.join() === '0,1' && !samples.at(-1).decks.every((d) => d.playing), indices.join());
+
+  // ---- a beat-matched mix: 124 BPM into 118 BPM, blend style
+  await page.evaluate(() => {
+    window.__phosphor.player.clear();
+    window.__phosphor.settings.set({ transitionMode: 'mix', mixStyle: 'blend', songCrossfade: 0 });
+  });
+  await page.setInputFiles('#file-input', [path.join(AUDIO, 'signal-check.wav'), path.join(AUDIO, 'signal-check-118.wav')]);
+  await page.waitForFunction(() => window.__phosphor.player.queue.length === 2);
+  await page.evaluate(() => void window.__phosphor.player.playTrack(window.__phosphor.player.queue[0].id));
+  // Both songs' beat grids are worked out in the background first.
+  const gridsReady = await page
+    .waitForFunction(() => {
+      const { app, player } = window.__phosphor;
+      return player.queue.every((t) => app.beatGrids.peek(t.file));
+    }, null, { timeout: 30000 })
+    .then(() => true, () => false);
+  check('both songs get beat grids (and keys) before the mix', gridsReady);
+  const grids = await page.evaluate(() => window.__phosphor.player.queue.map((t) => {
+    const g = window.__phosphor.app.beatGrids.peek(t.file);
+    return { bpm: g.bpm, beats: g.beats, downbeat: g.downbeat, key: g.key };
+  }));
+  // Jump to a few seconds before the hand-over the planner will choose (a phrase start near the end).
+  await page.evaluate(() => void window.__phosphor.player.seek(13.5));
+  samples = await watchDecks(22000);
+  const overlap = samples.filter((s) => s.decks[0].playing && s.decks[1].playing);
+  check('the mix overlaps the songs for several bars', overlap.length * 100 >= 8000, `${overlap.length * 100} ms`);
+  // The incoming deck is whichever wasn't playing the first song at the start.
+  const inDeck = samples[0].decks[0].playing ? 1 : 0;
+  const outDeck = 1 - inDeck;
+  const rates = overlap.map((s) => s.decks[inDeck].rate);
+  const meanRate = rates.reduce((a, b) => a + b, 0) / Math.max(1, rates.length);
+  // (Natural sort order puts the 118 BPM file first, so this mix runs 118 into 124.)
+  const wanted = grids[0].bpm / grids[1].bpm;
+  check(
+    `the incoming song is time-stretched to the outgoing tempo (${grids[1].bpm.toFixed(0)} to ${grids[0].bpm.toFixed(0)} BPM, pitch kept)`,
+    Math.abs(meanRate - wanted) < 0.02 && overlap.every((s) => s.decks[inDeck].pitchKept),
+    `rate ${meanRate.toFixed(4)}, wanted ${wanted.toFixed(4)}`,
+  );
+  // Beat phase of each deck from its grid: they must line up.
+  const phase = (g, pos) => {
+    let i = 0;
+    while (i + 1 < g.beats.length && g.beats[i + 1] <= pos) i++;
+    const len = (g.beats[i + 1] ?? g.beats[i] + 60 / g.bpm) - g.beats[i];
+    return (pos - g.beats[i]) / len;
+  };
+  const errors = overlap.slice(5).map((s) => {
+    let d = phase(grids[1], s.decks[inDeck].pos) - phase(grids[0], s.decks[outDeck].pos);
+    d -= Math.round(d);
+    return Math.abs(d);
+  });
+  const worst = errors.length ? errors.sort((a, b) => a - b)[Math.floor(errors.length * 0.9)] : 1;
+  check('...and its beats stay locked to the outgoing beats (90% within a tenth of a beat)', worst < 0.1, `${(worst * 100).toFixed(1)}% of a beat`);
+  const swapped = overlap.some((s) => s.decks[outDeck].low < -20 && s.decks[inDeck].low > -3);
+  const cutFirst = overlap.slice(0, 10).some((s) => s.decks[inDeck].low < -20);
+  check('blend: the incoming song comes in without its bass, then the basslines swap', cutFirst && swapped);
+  check('...and afterwards the new song plays on alone', samples.at(-1).decks.filter((d) => d.playing).length === 1 && samples.at(-1).index === 1);
+  check('the mix plan knows both keys', Boolean(grids[0].key && grids[1].key), JSON.stringify(grids.map((g) => g.key)));
+
+  // ---- a rise
+  await page.evaluate(() => {
+    const { player, settings } = window.__phosphor;
+    settings.set({ mixStyle: 'rise' });
+    void player.playTrack(player.queue[0].id);
+  });
+  await page.waitForFunction(() => window.__phosphor.player.position > 0.2, null, { timeout: 10000 });
+  // The build is the 16 beats before the last phrase (about 25 to 33 s in).
+  await page.evaluate(() => void window.__phosphor.player.seek(22));
+  samples = await watchDecks(14000);
+  const rising = samples.filter((s) => s.decks.some((d) => d.playing && d.high > 300));
+  check('rise: the outgoing song is filtered upward into the change', rising.length > 5, `${rising.length} samples`);
+
+  // ---- local into a streaming song: the two players overlap
+  await page.evaluate(() => {
+    const { player, settings } = window.__phosphor;
+    settings.set({ transitionMode: 'crossfade', songCrossfade: 3 });
+    player.clear();
+  });
+  await page.setInputFiles('#file-input', path.join(AUDIO, 'signal-check-short.mp3'));
+  await page.waitForFunction(() => window.__phosphor.player.queue.length === 1);
+  await page.evaluate(() => {
+    const { player, app } = window.__phosphor;
+    const yt = app.services.find((s) => s.id === 'youtube');
+    player.add([yt['videoTrack']('shortclip01'), yt['videoTrack']('shortclip02')]);
+    void player.playTrack(player.queue[0].id);
+  });
+  // One window covers the whole run: the local clip (8 s) crossfades into the
+  // first YouTube clip, which then fades out into the second.
+  const timeline = await page.evaluate(async () => {
+    const { engine, player } = window.__phosphor;
+    const out = [];
+    const end = performance.now() + 24000;
+    while (performance.now() < end) {
+      const yt = window.__fakeYouTube;
+      out.push({
+        local: engine.decks.some((d) => !d.element.paused && d.element.getAttribute('src')),
+        yt: Boolean(yt && !yt.audio.paused),
+        volume: yt?.volume ?? -1,
+        ref: player.current?.ref ?? null,
+      });
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return out;
+  });
+  const together = timeline.filter((s) => s.local && s.yt).length;
+  check('local into YouTube: both play at once while one fades into the other', together >= 10, `${together * 100} ms`);
+  const firstClip = timeline.filter((s) => s.ref === 'shortclip01' && s.yt).map((s) => s.volume);
+  const secondClip = timeline.filter((s) => s.ref === 'shortclip02' && s.yt).map((s) => s.volume);
+  check('...the YouTube player fades up from silence', firstClip.length > 0 && Math.min(...firstClip.slice(0, 5)) < 40 && Math.max(...firstClip) >= 70, firstClip.slice(0, 8).join(','));
+  check('two YouTube songs in a row: the first fades out before the second starts', firstClip.length > 10 && Math.min(...firstClip.slice(-5)) < 40, firstClip.slice(-6).join(','));
+  check('...and the second fades in', secondClip.length > 0 && secondClip[0] < 40 && Math.max(...secondClip) >= 70, secondClip.slice(0, 6).join(','));
+  await context.close();
+}
+
 // ----------------------------------------------------------------------- main
 
 (async () => {
@@ -1594,6 +1753,7 @@ function rhythm() {
     if (only.includes('reaction')) await reaction(browser);
     if (only.includes('player')) await player(browser);
     if (only.includes('playlists')) await playlists(browser);
+    if (only.includes('transitions')) await transitions(browser);
   } finally {
     await browser.close();
   }

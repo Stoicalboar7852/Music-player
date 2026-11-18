@@ -28,6 +28,8 @@ export interface BeatGrid {
   downbeat: number;
   /** 0..1: how regular the beat is. */
   confidence: number;
+  /** The song's key, from its chroma (tonic: pitch class with 0 = A). */
+  key?: { tonic: number; minor: boolean; confidence: number };
 }
 
 export type BeatSource = 'grid' | 'tracked' | 'onsets' | 'none';

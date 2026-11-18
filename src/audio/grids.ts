@@ -4,6 +4,7 @@
 // session, keyed by file name, size and date.
 
 import { debug } from '../app/debug';
+import { keyName } from '../player/transitions';
 import type { BeatGrid } from './rhythm';
 
 /** Longer files aren't analysed: decoding them whole would take too much memory. */
@@ -13,6 +14,7 @@ const MAX_BYTES = 400e6;
 export class BeatGrids {
   private readonly context: BaseAudioContext;
   private readonly cache = new Map<string, Promise<BeatGrid | null>>();
+  private readonly ready = new Map<string, BeatGrid | null>();
   private worker: Worker | null = null;
   private seq = 0;
   private readonly waiting = new Map<number, (grid: BeatGrid | null) => void>();
@@ -23,7 +25,7 @@ export class BeatGrids {
 
   /** The grid for a file, worked out on first request. Null when it has no steady beat. */
   forFile(file: File): Promise<BeatGrid | null> {
-    const key = `${file.name}|${file.size}|${file.lastModified}`;
+    const key = BeatGrids.key(file);
     let grid = this.cache.get(key);
     if (!grid) {
       grid = this.analyse(file).catch((error: unknown) => {
@@ -31,8 +33,18 @@ export class BeatGrids {
         return null;
       });
       this.cache.set(key, grid);
+      void grid.then((g) => this.ready.set(key, g));
     }
     return grid;
+  }
+
+  /** The grid for a file if it has been worked out already (undefined while it is still being worked out). */
+  peek(file: File): BeatGrid | null | undefined {
+    return this.ready.get(BeatGrids.key(file));
+  }
+
+  private static key(file: File) {
+    return `${file.name}|${file.size}|${file.lastModified}`;
   }
 
   private async analyse(file: File): Promise<BeatGrid | null> {
@@ -50,7 +62,7 @@ export class BeatGrids {
     debug(
       'rhythm',
       grid
-        ? `beat grid for ${file.name}: ${grid.bpm.toFixed(1)} BPM, ${grid.beats.length} beats, confidence ${grid.confidence.toFixed(2)}, ${Math.round(performance.now() - started)} ms`
+        ? `beat grid for ${file.name}: ${grid.bpm.toFixed(1)} BPM, ${grid.beats.length} beats, confidence ${grid.confidence.toFixed(2)}${grid.key ? `, key ${keyName(grid.key)}` : ''}, ${Math.round(performance.now() - started)} ms`
         : `no steady beat in ${file.name}; tracking it live instead`,
     );
     return grid;

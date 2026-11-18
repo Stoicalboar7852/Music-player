@@ -20,6 +20,11 @@ export interface Settings {
   autoHide: AutoHide;
   /** Open the share-this-tab dialog when a streaming song is started by a click. */
   autoShare: boolean;
+  /** Seconds songs overlap when one gives way to the next (0 = off). */
+  songCrossfade: number;
+  /** Local files: a plain crossfade, or a beat-matched mix. */
+  transitionMode: 'crossfade' | 'mix';
+  mixStyle: 'fade' | 'blend' | 'rise';
   volume: number;
   shuffle: boolean;
   repeat: RepeatMode;
@@ -40,6 +45,9 @@ const DEFAULTS: Settings = {
   showStats: false,
   autoHide: 'fullscreen',
   autoShare: true,
+  songCrossfade: 0,
+  transitionMode: 'crossfade',
+  mixStyle: 'blend',
   volume: 0.8,
   shuffle: false,
   repeat: 'off',

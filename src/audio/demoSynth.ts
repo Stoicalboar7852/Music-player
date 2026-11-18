@@ -15,9 +15,9 @@ export interface DemoAudio {
 export const DEMO_TITLE = 'Signal Check';
 export const DEMO_ARTIST = 'Phosphor';
 
-export function synthesizeDemo(sampleRate = 44100): DemoAudio {
+export function synthesizeDemo(sampleRate = 44100, bpm = 124): DemoAudio {
   const SR = sampleRate;
-  const BEAT = 60 / 124;
+  const BEAT = 60 / bpm;
   const BAR = BEAT * 4;
   const BARS = 21;
   const total = Math.floor(BARS * BAR * SR);

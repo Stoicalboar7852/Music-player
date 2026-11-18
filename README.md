@@ -6,7 +6,7 @@ A music player for the browser whose main attraction is its visualizers. Put mus
 
 - **Sources:** local files (MP3, FLAC, WAV, M4A/AAC, OGG/Opus and anything else Chrome or Edge decodes), whatever your computer is playing (system or tab audio capture), Spotify, Apple Music, and YouTube / YouTube Music.
 - **Visualizers:** twenty-five in five categories: classic (spectrum bars, oscilloscope, feedback trails, kaleidoscope, real MilkDrop presets, a spectrogram, ridgelines), modern (GPU particles, a radial spectrum around the album art, a laser show, a mandala), 3D (raymarched orb, lattice and crystal cave, a frequency terrain, a ringed planet, light ribbons), retro and arcade (a demoscene tunnel, a pixel-art night drive, a self-playing pixel shooter, vector-monitor wireframes) and simulations (fluid, reaction-diffusion, a cellular automaton, a slime mould). Kicks, the bassline, vocals, hi-hats and drops each drive something different in every one of them.
-- **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, a visualizer gallery, auto-cycling with crossfades.
+- **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, crossfades between songs (and beat-matched DJ mixes between local files), a visualizer gallery, auto-cycling visualizers.
 - **Stack:** Vite + TypeScript, raw WebGL2, Web Audio. No backend and no framework. Runs in Chrome or Edge.
 
 ## Version 2 (this branch, in progress)
@@ -23,6 +23,7 @@ This is the `v2` branch. The `v1` branch keeps the first version unchanged. V2 i
 
 - **Thirteen new visualizers, five gallery categories.** Spectrogram and Ridgelines (classic), Laser Show and Petals (modern), Ringed Planet, Crystal Cavern and Ribbons (3D), Neon Racer, Starfighter and Vector Arcade (retro and arcade: original takes on arcade genres, not copies of any game), and Reaction-Diffusion, Life and Slime Mold (simulations). The gallery filters by category. See [Visualizers](#visualizers).
 - **Beat tracking that follows the drums.** The analysis now separates what is percussive from what is held (singing, chords, the bassline), finds kicks, snares and hi-hats in the percussive part, and locks onto the tempo, the beat and the bar. Local files get their beats worked out ahead of time in the background, so beats land exactly. It also follows the bassline, the vocals and leads, brightness and energy, and spots build-ups and drops. Every visualizer was rewired so big pulses come from kicks and beats, continuous motion from the bassline, colour and detail from the vocals, sparkle from the hi-hats, and scene changes from drops. A singer or a pad on its own no longer makes anything pulse. See [How the visuals follow the music](#how-the-visuals-follow-the-music).
+- **Crossfades and DJ-style mixes.** Settings, Between songs: crossfade from off to 12 seconds, with the loudness held steady, between any two sources (a local file into Spotify, YouTube into Apple Music...). Two songs on the same streaming service can't play at once, so they fade out and in. Local files can instead be mixed like a DJ would: tempo matched without changing pitch, beats and bars lined up, clashing keys kept short, in three styles (fade, blend with a bass swap, or a filter rise). See [Between songs](#between-songs-crossfades-and-mixes).
 
 Still to come: crossfade and mix transitions, and desktop and phone apps.
 
@@ -74,6 +75,25 @@ Media keys, headset buttons and the OS "now playing" widget control playback too
 In fullscreen the controls fade out a few seconds after the mouse stops (Settings can make that happen always, or never). They stay while the pointer is over them. Auto-cycle picks a new visualizer every 15 seconds to 5 minutes, shuffled or in order, crossfading between them; it pauses while nothing is playing. Quality defaults to **Auto**, which lowers the internal render resolution when frames start dropping and raises it again when there is headroom, so the frame rate holds on slower GPUs.
 
 Settings, the last visualizer, volume, shuffle and repeat are remembered in the browser.
+
+### Between songs: crossfades and mixes
+
+**Settings → Between songs** sets how one song gives way to the next.
+
+- **Crossfade** (off, or 2 to 12 seconds). The end of one song overlaps the start of the next, with equal-power curves so the loudness holds steady through the change. It works between any two sources:
+  - **Local file to local file**: two players overlap on Phosphor's own audio graph.
+  - **Different services** (a local file into Spotify, YouTube into Apple Music, and so on): both players run at once, one fading down while the other fades up.
+  - **Two songs on the same streaming service** can't overlap: a Spotify account plays one song at a time, MusicKit gives a page a single Apple Music player, and Phosphor runs a single YouTube player. So the first song fades out over its last few seconds and the next one fades in. The services don't let a page preload the next song, so there may be a short gap while it starts.
+  - **A whole album or playlist the service plays itself** (a Spotify or Apple Music list added as one item): the service moves from song to song inside it, so Phosphor doesn't fade between those.
+- **Mix, like a DJ** (local files). When both songs have a beat grid (worked out in the background, ahead of time), Phosphor plans a DJ transition:
+  - It picks the last phrase of the outgoing song (a downbeat at a 16-beat boundary, falling back to 8 or 4) that leaves room for the overlap, and starts the incoming song on its first downbeat, so bars line up with bars.
+  - It matches the tempo by time-stretching the incoming song (its pitch doesn't change), within ±8%, also trying double and half time. While the two overlap, it keeps the beats locked the way a DJ rides the pitch fader. Afterwards the new song glides back to its own tempo over a few seconds.
+  - It estimates each song's key (Krumhansl-Kessler key profiles on the song's chroma) and places it on the Camelot wheel. Songs whose keys clash get half the overlap, so their harmonies don't sit on top of each other for long.
+  - Three styles: **Fade** (an equal-power crossfade across 16 beats), **Blend** (32 beats: the incoming song comes in without its bass, the basslines swap on a downbeat halfway, then the outgoing song fades out) and **Rise** (16 beats: the outgoing song is filtered upward into a build, then the incoming one drops in on the new phrase).
+  - If a grid isn't ready, or a song has no steady beat, it crossfades instead (at least 6 seconds).
+  - Turn on `?debug` to see each plan in the console, e.g. `mixing into "…": blend over 32 beats from beat 35 (17.4 s), tempo ×1.051, keys compatible`.
+
+Streaming songs can't be mixed this way. The services' web players don't give a page their audio (Phosphor only hears it through tab capture, as it plays), so it can't be filtered or analysed ahead of time, and Spotify's and Apple's players have no way to change a song's tempo. For streaming, Phosphor crossfades or fades, as above.
 
 ## Visualizers
 
@@ -342,21 +362,36 @@ It checks:
 
   | Visualizer | Bass | Mids | Treble | Beats | Motion |
   | --- | ---: | ---: | ---: | ---: | ---: |
-  | Spectrum | 2.0 | 1.5 | 1.6 | 1.1 | 4.3 |
-  | Oscilloscope | 8.7 | 22.6 | 54.8 | 7.2 | 24.4 |
-  | Feedback Trails | 53.7 | 12.3 | 30.9 | 46.3 | 29.9 |
-  | Tunnel | 29.5 | 17.8 | 6.5 | 3.6 | 31.7 |
-  | Kaleidoscope | 15.5 | 33.9 | 34.0 | 13.3 | 53.5 |
-  | MilkDrop | 52.9 | 119.6 | 67.3 | n/a* | 18.7 |
-  | Particle Field | 21.4 | 14.0 | 21.6 | 18.6 | 16.7 |
-  | Pulse Orb | 5.5 | 10.1 | 3.6 | 4.5 | 16.0 |
-  | Lattice Flight | 7.9 | 10.7 | 10.6 | 9.3 | 27.9 |
-  | Frequency Terrain | 19.7 | 7.2 | 17.7 | 4.2 | 29.2 |
-  | Fluid | 57.8 | 34.0 | 97.0 | 11.8 | 24.0 |
-  | Album Halo | 5.7 | 3.0 | 3.4 | 4.5 | 11.4 |
+  | Spectrum | 2.4 | 1.7 | 1.8 | 0.9 | 4.5 |
+  | Oscilloscope | 9.7 | 22.7 | 52.6 | 6.0 | 22.8 |
+  | Feedback Trails | 53.0 | 13.0 | 32.5 | 40.4 | 30.1 |
+  | Tunnel | 30.6 | 36.0 | 10.9 | 3.2 | 35.4 |
+  | Kaleidoscope | 21.1 | 32.5 | 39.6 | 11.9 | 56.2 |
+  | MilkDrop | 52.9 | 119.6 | 67.3 | n/a* | 18.6 |
+  | Particle Field | 24.5 | 28.1 | 19.0 | 18.9 | 17.5 |
+  | Pulse Orb | 8.7 | 18.3 | 8.7 | 4.2 | 20.4 |
+  | Lattice Flight | 8.9 | 9.9 | 12.9 | 9.7 | 26.1 |
+  | Frequency Terrain | 28.9 | 12.7 | 14.6 | 3.5 | 31.1 |
+  | Fluid | 53.5 | 36.7 | 76.9 | 13.0 | 20.4 |
+  | Album Halo | 6.4 | 3.4 | 3.3 | 4.1 | 11.8 |
+  | Spectrogram | 16.9 | 11.6 | 10.6 | 1.3 | 23.4 |
+  | Ridgelines | 12.3 | 14.4 | 3.5 | 2.3 | 16.6 |
+  | Laser Show | 3.1 | 3.4 | 1.1 | 4.9 | 14.0 |
+  | Petals | 4.4 | 5.5 | 2.6 | 2.4 | 7.7 |
+  | Ringed Planet | 5.0 | 6.0 | 2.4 | 4.9 | 9.1 |
+  | Crystal Cavern | 74.0 | 52.5 | 51.1 | 50.9 | 43.6 |
+  | Ribbons | 9.5 | 9.2 | 1.6 | 11.0 | 18.2 |
+  | Neon Racer | 5.7 | 6.2 | 4.2 | 5.1 | 9.5 |
+  | Starfighter | 3.6 | 3.4 | 2.8 | 2.7 | 4.6 |
+  | Vector Arcade | 10.0 | 7.6 | 7.2 | 5.3 | 22.4 |
+  | Reaction-Diffusion | 23.7 | 29.0 | 22.4 | 11.1 | 26.8 |
+  | Life | 11.0 | 2.3 | 19.5 | 10.9 | 22.3 |
+  | Slime Mold | 65.1 | 108.1 | 50.1 | 82.8 | 29.3 |
 
   Small numbers mean a localised change (one group of bars, a ring), not a weak one. \*MilkDrop presets detect beats from the waveform themselves, so withholding Phosphor's beat signal changes nothing; their bass response covers it.
-- **Player and interface:** tags and art from each format, decoding each format, every keyboard shortcut, crossfades, the gallery, auto-cycle, queue editing, drag and drop, folders with cover images, an undecodable file, the idle fade, fullscreen, the demo track, settings persistence.
+- **Rhythm and mixing:** see [How the visuals follow the music](#how-the-visuals-follow-the-music) for the beat-tracking ground truth. The same script checks the mix planner on two copies of the demo track (124 and 118 BPM): keys on the Camelot wheel, each style starting on a phrase of the outgoing song and a downbeat of the incoming one, every beat of the overlap meeting a beat of the other song, the tempo ratio, half-length overlaps for clashing keys, and the fallbacks.
+- **Between songs:** a 3-second crossfade between two local files (the next one starts before the first ends, the summed power stays at 1, the queue moves on once); a blend mix from the 118 BPM version into the 124 BPM one (both grids and keys ready first, several bars of overlap, the incoming song time-stretched to the outgoing tempo with its pitch kept, beats within a tenth of a beat 90% of the time, the bass swap); a rise (the outgoing song filtered upward); a local file crossfading into YouTube (both players sounding at once); and two YouTube songs in a row (fade out, then in).
+- **Player and interface:** tags and art from each format, decoding each format, every keyboard shortcut, visualizer crossfades, the gallery, auto-cycle, queue editing, drag and drop, folders with cover images, an undecodable file, the idle fade, fullscreen, the demo track, settings persistence.
 - **Capture:** real `getDisplayMedia` capture of another tab and of the app's own tab, including that the captured audio has no path to the speakers.
 - **Spotify, Apple Music, YouTube:** each against a local simulation of the service (in `scripts/mocks`) that follows the documented behaviour: OAuth with real PKCE verification, the Web API's 2026 response shapes, the playback SDK's events, MusicKit's queue and events, the IFrame API's states and errors, the Data API with quotas and pagination. Like the real players, the simulated Spotify and YouTube players run inside cross-origin frames, and Spotify's reports state only when something changes. Songs are played all the way to their end on each service, including Spotify's quirks (autoplay, relinked songs, a silent end). These prove Phosphor's side of each integration. They cannot prove the real services behave as documented; see below.
 - **Now Playing and media keys:** what Chromium tells the operating system is playing (title, artist, artwork, playing or paused) for local files, Spotify and YouTube, and the Next, Pause and Play media keys, read and pressed through Chromium's MPRIS interface on Linux.

@@ -98,6 +98,50 @@ export function openSettings(app: App, section?: string) {
     ),
     field('Show frame rate', toggle(settings.get('showStats'), 'Show frame rate', (showStats) => settings.set({ showStats }))),
 
+    h('h3', { text: 'Between songs', 'data-section': 'transitions' }),
+    field(
+      'Crossfade',
+      select<number>(
+        [
+          [0, 'Off'],
+          [2, '2 seconds'],
+          [4, '4 seconds'],
+          [6, '6 seconds'],
+          [8, '8 seconds'],
+          [10, '10 seconds'],
+          [12, '12 seconds'],
+        ],
+        settings.get('songCrossfade'),
+        (songCrossfade) => settings.set({ songCrossfade }),
+      ),
+      'The end of one song overlaps the start of the next, with the loudness held steady. Songs on different services overlap too. Two songs on the same streaming service can\'t play at once (one player each), so they fade out and back in instead.',
+    ),
+    field(
+      'Local files',
+      segmented<'crossfade' | 'mix'>(
+        [
+          ['crossfade', 'Crossfade'],
+          ['mix', 'Mix, like a DJ'],
+        ],
+        settings.get('transitionMode'),
+        (transitionMode) => settings.set({ transitionMode }),
+      ),
+      'A mix lines up the beats and bars of the two songs, matches their tempo (without changing pitch) and keeps clashing keys short. It uses the beat analysis Phosphor does for local files; if that isn\'t ready, it crossfades.',
+    ),
+    field(
+      'Mix style',
+      segmented<'fade' | 'blend' | 'rise'>(
+        [
+          ['fade', 'Fade'],
+          ['blend', 'Blend'],
+          ['rise', 'Rise'],
+        ],
+        settings.get('mixStyle'),
+        (mixStyle) => settings.set({ mixStyle }),
+      ),
+      'Fade: an even crossfade across whole bars. Blend: the next song comes in without its bass, the basslines swap on a downbeat, then the first song fades. Rise: the first song is filtered upward into a build and the next one drops in on the new phrase.',
+    ),
+
     h('h3', { text: 'Streaming audio' }),
     field(
       'Ask to share this tab automatically',

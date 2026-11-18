@@ -3,66 +3,310 @@
 // and reading their tags and cover art.
 
 import type { AudioEngine } from '../audio/engine';
+import type { TransitionPlan } from './transitions';
 import { newTrackId, type Backend, type BackendEvents, type Track } from './types';
 
 /** Extensions Chrome/Edge can usually decode. The browser has the final say. */
 const AUDIO_EXTENSION = /\.(mp3|m4a|m4b|aac|flac|wav|wave|ogg|oga|opus|weba|webm|mp4|caf)$/i;
 const COVER_FILE = /^(cover|folder|front|album|albumart|artwork)\.(jpe?g|png|webp|gif)$/i;
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export function isAudioFile(file: File): boolean {
   return file.type.startsWith('audio/') || AUDIO_EXTENSION.test(file.name);
+}
+
+/** A hand-over in progress; finish() completes it at once (pause, skip, seek). */
+export interface RunningTransition {
+  finish(): void;
+  readonly done: Promise<void>;
 }
 
 export class LocalBackend implements Backend {
   readonly source = 'local' as const;
   events: Partial<BackendEvents> = {};
-  private url: string | null = null;
+  /** Object URL loaded on each deck (index matches engine.decks). */
+  private urls: (string | null)[] = [null, null];
+  private running: { finish(): void } | null = null;
+  /** A hand-over being prepared (the next song hasn't started yet). */
+  private pending: { cancel(): void } | null = null;
 
   constructor(private engine: AudioEngine) {
-    const el = engine.element;
-    // The engine briefly plays silence on the same element to unlock audio; ignore it.
-    const real = () => this.url !== null && el.src === this.url;
-    el.addEventListener('ended', () => real() && this.events.ended?.());
-    el.addEventListener('playing', () => real() && this.events.state?.(true));
-    el.addEventListener('pause', () => {
-      // "pause" also fires at the end of a track and while a new one loads.
-      if (real() && !el.ended && el.readyState > 0) this.events.state?.(false);
+    engine.decks.forEach((deck, index) => {
+      const el = deck.element;
+      // Only the current deck speaks for the player; the other one may be
+      // finishing the previous song, or warming up the next. The engine also
+      // briefly plays silence on the elements to unlock audio; ignore that too.
+      const real = () => this.urls[index] !== null && el.src === this.urls[index] && engine.deck === deck;
+      el.addEventListener('ended', () => real() && this.events.ended?.());
+      el.addEventListener('playing', () => real() && this.events.state?.(true));
+      el.addEventListener('pause', () => {
+        // "pause" also fires at the end of a track and while a new one loads.
+        if (real() && !el.ended && el.readyState > 0 && !this.running) this.events.state?.(false);
+      });
+      el.addEventListener('durationchange', () => {
+        if (real() && Number.isFinite(el.duration) && el.duration > 0) this.events.meta?.({ duration: el.duration });
+      });
+      el.addEventListener('error', () => {
+        if (!real()) return;
+        const code = el.error?.code;
+        this.events.error?.(
+          code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || code === MediaError.MEDIA_ERR_DECODE
+            ? "this browser can't decode the file's format"
+            : (el.error?.message || 'the file could not be read'),
+        );
+      });
     });
-    el.addEventListener('durationchange', () => {
-      if (real() && Number.isFinite(el.duration) && el.duration > 0) this.events.meta?.({ duration: el.duration });
-    });
-    el.addEventListener('error', () => {
-      if (!real()) return;
-      const code = el.error?.code;
-      this.events.error?.(
-        code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || code === MediaError.MEDIA_ERR_DECODE
-          ? "this browser can't decode the file's format"
-          : (el.error?.message || 'the file could not be read'),
-      );
-    });
+  }
+
+  private cancelPending() {
+    this.pending?.cancel();
+    this.pending = null;
+  }
+
+  private get index(): number {
+    return this.engine.decks.indexOf(this.engine.deck);
+  }
+
+  private setUrl(index: number, file: File): string {
+    const previous = this.urls[index];
+    const url = URL.createObjectURL(file);
+    this.urls[index] = url;
+    if (previous) URL.revokeObjectURL(previous);
+    return url;
+  }
+
+  private clearDeck(index: number) {
+    const deck = this.engine.decks[index];
+    deck.element.pause();
+    deck.element.removeAttribute('src');
+    deck.element.load();
+    deck.reset();
+    const url = this.urls[index];
+    if (url) URL.revokeObjectURL(url);
+    this.urls[index] = null;
   }
 
   async load(track: Track) {
     if (!track.file) throw new Error('the file is no longer available');
-    const el = this.engine.element;
-    const previous = this.url;
-    this.url = URL.createObjectURL(track.file);
-    el.src = this.url;
-    if (previous) URL.revokeObjectURL(previous);
+    this.cancelPending();
+    this.running?.finish();
+    // Anything still sounding on the other deck stops: this is a plain change of song.
+    this.clearDeck(1 - this.index);
+    const deck = this.engine.deck;
+    deck.reset();
+    deck.element.src = this.setUrl(this.index, track.file);
     await this.engine.resume();
-    await el.play();
+    await deck.element.play();
+  }
+
+  /**
+   * Hands over to `next` on the other deck following `plan`: a crossfade, or a
+   * beat-matched mix. Resolves once the next song has started (it is then the
+   * current one); the outgoing song fades out in the background. Until then
+   * any transport action (pause, seek, another song) calls it off, and the
+   * promise rejects.
+   */
+  async transition(next: Track, plan: TransitionPlan): Promise<RunningTransition> {
+    if (!next.file) throw new Error('the file is no longer available');
+    this.cancelPending();
+    this.running?.finish();
+    const ctx = this.engine.context;
+    const outDeck = this.engine.deck;
+    const inDeck = this.engine.otherDeck;
+    const outIndex = this.index;
+    const inIndex = 1 - outIndex;
+    const out = outDeck.element;
+    const incoming = inDeck.element;
+
+    let cancelled = false;
+    const pending = {
+      cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
+        if (this.pending === pending) this.pending = null;
+        // The outgoing song carries on as if nothing had been planned.
+        const t = ctx.currentTime;
+        outDeck.high.frequency.cancelScheduledValues(t);
+        outDeck.high.frequency.setValueAtTime(10, t);
+        this.clearDeck(inIndex);
+      },
+    };
+    this.pending = pending;
+    const stillOn = () => {
+      if (cancelled) throw new Error('called off');
+    };
+
+    const entry = plan.outStart + plan.enterAt;
+    const end = plan.outStart + plan.length;
+    /** Context time at which the outgoing song reaches `pos` (now, if it already has). */
+    const when = (pos: number) => ctx.currentTime + Math.max(0, (pos - out.currentTime) / Math.max(0.01, out.playbackRate));
+    /** Where the incoming song should be when the outgoing one is at `outPos`. */
+    const inAt = (outPos: number) => plan.inStart + (outPos - entry) * plan.rate;
+
+    try {
+      inDeck.reset();
+      incoming.src = this.setUrl(inIndex, next.file);
+      incoming.playbackRate = plan.rate;
+      inDeck.gain.gain.setValueAtTime(0, ctx.currentTime);
+      if (plan.style === 'blend') inDeck.low.gain.setValueAtTime(-30, ctx.currentTime);
+      while (incoming.readyState < 1) {
+        stillOn();
+        if (incoming.error) throw new Error("the next file couldn't be read");
+        await sleep(30);
+      }
+      stillOn();
+
+      if (plan.style === 'rise') {
+        // The build: from the start of the phrase, the outgoing song is
+        // filtered upward until the next one drops in.
+        const f = outDeck.high.frequency;
+        const t0 = Math.max(ctx.currentTime + 0.02, when(plan.outStart));
+        f.cancelScheduledValues(ctx.currentTime);
+        f.setValueAtTime(10, t0);
+        f.exponentialRampToValueAtTime(2400, Math.max(t0 + 0.1, when(entry)));
+      }
+
+      // A mix starts the incoming song a moment early, silent, so it is
+      // running in time when its part begins. A plain crossfade starts it from
+      // the top as the fade begins.
+      const preroll = plan.aligned ? 0.35 : 0;
+      while (out.currentTime < entry - preroll && !out.ended) {
+        stillOn();
+        await sleep(Math.min(40, Math.max(4, (entry - preroll - out.currentTime) * 500)));
+      }
+      stillOn();
+      incoming.currentTime = Math.max(0, inAt(out.currentTime));
+      await incoming.play();
+      stillOn();
+      if (plan.aligned) {
+        // Now that it is running (and still silent), line it up exactly.
+        const error = incoming.currentTime - inAt(out.currentTime);
+        if (Math.abs(error) > 0.015) incoming.currentTime = Math.max(0, incoming.currentTime - error);
+      }
+    } catch (error) {
+      pending.cancel();
+      throw error;
+    }
+
+    // From here the incoming song is the current one; the outgoing deck finishes the hand-over.
+    this.pending = null;
+    this.engine.swapDecks();
+    const now = ctx.currentTime;
+    const tStart = Math.max(now + 0.02, when(plan.outStart));
+    const tEnter = Math.max(now + 0.02, when(entry));
+    const tEnd = Math.max(tStart + 0.1, when(end));
+    const curve = (n: number, f: (x: number) => number) => Float32Array.from({ length: n }, (_, i) => f(i / (n - 1)));
+    const equalIn = curve(64, (x) => Math.sin((x * Math.PI) / 2));
+    const equalOut = curve(64, (x) => Math.cos((x * Math.PI) / 2));
+    const inGain = inDeck.gain.gain;
+    const outGain = outDeck.gain.gain;
+    inGain.cancelScheduledValues(now);
+    outGain.cancelScheduledValues(now);
+    inGain.setValueAtTime(0, now);
+    outGain.setValueAtTime(1, now);
+    // (A curve may not share its time span with any other change on the same parameter.)
+    let over = tEnd;
+    if (plan.style === 'rise') {
+      // The build cuts off and the next song drops in on the new phrase.
+      outGain.setValueAtTime(1, Math.max(now + 0.01, tEnter - 0.2));
+      outGain.linearRampToValueAtTime(0, tEnter + 0.04);
+      inGain.setValueAtTime(0, Math.max(now + 0.01, tEnter - 0.02));
+      inGain.linearRampToValueAtTime(1, tEnter + 0.02);
+      over = Math.max(tEnd, tEnter + 0.05);
+    } else if (plan.style === 'blend') {
+      const tSwap = Math.max(tStart + 0.2, when(plan.outStart + plan.swapAt));
+      // In without its bass, up to nearly full volume a little past halfway to the swap...
+      const rise = Math.max(0.1, (tSwap - tStart) * 0.6);
+      inGain.setValueCurveAtTime(curve(32, (x) => Math.sin((x * Math.PI) / 2) * 0.95), tStart, rise);
+      // ...the basslines swap on the downbeat...
+      const inLow = inDeck.low.gain;
+      const outLow = outDeck.low.gain;
+      inLow.cancelScheduledValues(now);
+      outLow.cancelScheduledValues(now);
+      inLow.setValueAtTime(-30, now);
+      outLow.setValueAtTime(0, now);
+      inLow.setValueAtTime(-30, tSwap - 0.12);
+      inLow.linearRampToValueAtTime(0, tSwap + 0.12);
+      outLow.setValueAtTime(0, tSwap - 0.12);
+      outLow.linearRampToValueAtTime(-30, tSwap + 0.12);
+      // ...then the outgoing song fades away.
+      const fadeFrom = tSwap + 0.13;
+      const fadeFor = Math.max(0.1, tEnd - fadeFrom);
+      outGain.setValueCurveAtTime(equalOut, fadeFrom, fadeFor);
+      const full = Math.max(tStart + rise + 0.01, fadeFrom + fadeFor - 0.5);
+      inGain.setValueAtTime(0.95, full);
+      inGain.linearRampToValueAtTime(1, full + 0.5);
+      over = Math.max(fadeFrom + fadeFor, full + 0.5);
+    } else {
+      // Equal power: the loudness holds steady while one song gives way to the other.
+      inGain.setValueCurveAtTime(equalIn, tStart, tEnd - tStart);
+      outGain.setValueCurveAtTime(equalOut, tStart, tEnd - tStart);
+    }
+
+    // Keep the beats locked while they overlap: nudge the incoming tempo by a
+    // hair when it drifts, the way a DJ rides the pitch fader.
+    let finished = false;
+    let resolveDone: () => void = () => {};
+    const done = new Promise<void>((r) => (resolveDone = r));
+    const lock = window.setInterval(() => {
+      if (!plan.aligned || out.paused || incoming.paused) return;
+      const error = incoming.currentTime - inAt(out.currentTime); // seconds ahead (+) or behind (-)
+      if (Math.abs(error) > 0.25) {
+        incoming.currentTime -= error;
+        return;
+      }
+      const target = plan.rate * (1 - Math.max(-0.02, Math.min(0.02, error * 0.8)));
+      if (Math.abs(incoming.playbackRate - target) > 0.0005) incoming.playbackRate = target;
+    }, 100);
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearInterval(lock);
+      window.clearTimeout(timer);
+      if (this.running === handle) this.running = null;
+      this.clearDeck(outIndex);
+      const t = ctx.currentTime;
+      inGain.cancelScheduledValues(t);
+      inDeck.low.gain.cancelScheduledValues(t);
+      inGain.setValueAtTime(1, t);
+      inDeck.low.gain.setValueAtTime(0, t);
+      // Back to the incoming song's own tempo, gently, over a few seconds.
+      const from = incoming.playbackRate;
+      if (Math.abs(from - 1) > 0.001) {
+        let step = 0;
+        const glide = window.setInterval(() => {
+          step++;
+          // A new song on this deck (or a new mix) takes over the tempo.
+          if (this.engine.deck !== inDeck || this.running) return window.clearInterval(glide);
+          incoming.playbackRate = from + (1 - from) * Math.min(1, step / 40);
+          if (step >= 40) window.clearInterval(glide);
+        }, 100);
+      }
+      resolveDone();
+    };
+    const timer = window.setTimeout(finish, (over - now + 0.15) * 1000);
+    const handle = { finish, done };
+    this.running = handle;
+    return handle;
   }
 
   async play() {
+    this.cancelPending();
+    this.running?.finish();
     await this.engine.resume();
     await this.engine.element.play();
   }
 
   async pause() {
+    this.cancelPending();
+    this.running?.finish();
     this.engine.element.pause();
   }
 
   async seek(seconds: number) {
+    this.cancelPending();
+    this.running?.finish();
     this.engine.element.currentTime = seconds;
   }
 
@@ -79,12 +323,10 @@ export class LocalBackend implements Backend {
   }
 
   async stop() {
-    const el = this.engine.element;
-    el.pause();
-    el.removeAttribute('src');
-    el.load();
-    if (this.url) URL.revokeObjectURL(this.url);
-    this.url = null;
+    this.cancelPending();
+    this.running?.finish();
+    this.clearDeck(0);
+    this.clearDeck(1);
   }
 }
 

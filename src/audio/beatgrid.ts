@@ -127,6 +127,52 @@ export function drumHitRate(mono: Float32Array, sampleRate: number): number {
   return seconds > 0 ? hits / seconds : 0;
 }
 
+// Krumhansl-Kessler key profiles, starting from the tonic.
+const MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+const MINOR = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+/** The key whose profile best matches the song's overall chroma. */
+function estimateKey(chroma: Float32Array, frames: number): { tonic: number; minor: boolean; confidence: number } | undefined {
+  const total = new Float64Array(12);
+  for (let c = 0; c < frames; c++) {
+    let sum = 0;
+    for (let p = 0; p < 12; p++) sum += chroma[c * 12 + p];
+    if (sum <= 0) continue;
+    for (let p = 0; p < 12; p++) total[p] += chroma[c * 12 + p] / sum;
+  }
+  const correlate = (profile: number[], tonic: number) => {
+    let mx = 0, my = 0;
+    for (let i = 0; i < 12; i++) {
+      mx += total[(tonic + i) % 12];
+      my += profile[i];
+    }
+    mx /= 12;
+    my /= 12;
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < 12; i++) {
+      const x = total[(tonic + i) % 12] - mx;
+      const y = profile[i] - my;
+      sxy += x * y;
+      sxx += x * x;
+      syy += y * y;
+    }
+    return sxx > 0 ? sxy / Math.sqrt(sxx * syy) : 0;
+  };
+  let best = { tonic: 0, minor: false, r: -2 };
+  let second = -2;
+  for (let tonic = 0; tonic < 12; tonic++) {
+    for (const minor of [false, true]) {
+      const r = correlate(minor ? MINOR : MAJOR, tonic);
+      if (r > best.r) {
+        second = best.r;
+        best = { tonic, minor, r };
+      } else if (r > second) second = r;
+    }
+  }
+  if (best.r < 0.2) return undefined;
+  return { tonic: best.tonic, minor: best.minor, confidence: Math.max(0, Math.min(1, (best.r - second) * 4 + best.r * 0.5)) };
+}
+
 export interface BeatGridOptions {
   /** Called now and then with 0..1, for long files. */
   progress?: (fraction: number) => void;
@@ -386,5 +432,5 @@ export function analyzeBeatGrid(mono: Float32Array, sampleRate: number, options:
   const slope = (n * sumIT - sumI * sumT) / (n * sumII - sumI * sumI);
   const bpm = 60 / slope;
   options.progress?.(1);
-  return { bpm, beats, downbeat, confidence };
+  return { bpm, beats, downbeat, confidence, key: estimateKey(chroma, chromaFrames) };
 }

@@ -9,6 +9,9 @@
 //
 //   node scripts/rhythm-test.mjs
 //
+// The last section checks the mix planner (src/player/transitions.ts) on two
+// copies of the demo track at different tempos.
+//
 // Exits non-zero if any target is missed. scripts/verify.cjs runs it too.
 
 const { Analysis, FFT_SIZE } = await import('../src/audio/analysis.ts');
@@ -138,6 +141,67 @@ check('snares are told from hi-hats and kick clicks (precision >= 0.7, recall >=
   for (let i = 0; i < 4; i++) pad(p, i * 4, chords[i], 4, 0.1);
   const pe = live(p);
   check('held synth chords alone: no beats, kicks or snares', pe.beats.length === 0 && pe.kicks.length === 0 && pe.snares.length <= 1, `${pe.beats.length} beats, ${pe.kicks.length} kicks, ${pe.snares.length} snares`);
+}
+
+// ---- planning a DJ mix between two songs (src/player/transitions.ts)
+console.log('\n== Mixing: planning a transition from the beat grids ==');
+{
+  const { planTransition, camelot, keyDistance } = await import('../src/player/transitions.ts');
+  const wheel = (tonic, minor) => {
+    const c = camelot({ tonic, minor });
+    return `${c.number}${c.letter}`;
+  };
+  // (Tonic pitch classes count up from A: C is 3, E is 7, G is 10.)
+  const keys = [wheel(0, true), wheel(3, false), wheel(7, true), wheel(10, false), wheel(9, true), wheel(4, false)];
+  check('keys land on the Camelot wheel (A minor 8A, C major 8B, E minor 9A, G major 9B, F# minor 11A, D-flat major 3B)', keys.join() === '8A,8B,9A,9B,11A,3B', keys.join(', '));
+  const k = (tonic, minor) => ({ tonic, minor, confidence: 1 });
+  check(
+    'neighbouring keys mix (same key, a fifth, the relative major); far ones clash',
+    keyDistance(k(0, true), k(0, true)) === 0 && keyDistance(k(0, true), k(7, true)) === 0 && keyDistance(k(0, true), k(3, false)) === 0 && keyDistance(k(0, true), k(6, true)) === 2,
+  );
+
+  const mono = (d) => {
+    const m = new Float32Array(d.left.length);
+    for (let i = 0; i < m.length; i++) m[i] = 0.5 * (d.left[i] + d.right[i]);
+    return m;
+  };
+  const a = synthesizeDemo(SR, 124);
+  const b = synthesizeDemo(SR, 118);
+  const ga = analyzeBeatGrid(mono(a), SR);
+  const gb = analyzeBeatGrid(mono(b), SR);
+  const outDuration = a.left.length / SR;
+  check('both songs get a grid and a key (the demo is in A minor)', Boolean(ga?.key && gb?.key) && wheel(ga.key.tonic, ga.key.minor) === '8A' && wheel(gb.key.tonic, gb.key.minor) === '8A', `${ga?.bpm.toFixed(2)} and ${gb?.bpm.toFixed(2)} BPM`);
+  const near = (t, grid, tol) => grid.beats.some((x) => Math.abs(x - t) < tol);
+  for (const style of ['fade', 'blend', 'rise']) {
+    const plan = planTransition({ outDuration, outGrid: ga, inGrid: gb, crossfade: 0, mode: 'mix', style });
+    if (!plan) {
+      check(`${style}: a plan`, false, 'none');
+      continue;
+    }
+    const outIndex = ga.beats.findIndex((t) => Math.abs(t - plan.outStart) < 1e-6);
+    const phrase = outIndex >= 0 && (outIndex - ga.downbeat) % 16 === 0;
+    const inBar = Math.abs(plan.inStart - gb.beats[gb.downbeat]) < 1e-6;
+    // Over the overlap, every beat of the outgoing song must meet a beat of the incoming one.
+    const entry = plan.outStart + plan.enterAt;
+    const overlapBeats = ga.beats.filter((t) => t >= entry && t <= plan.outStart + plan.length);
+    const locked = overlapBeats.filter((t) => near(plan.inStart + (t - entry) * plan.rate, gb, 0.02)).length;
+    const beats = Math.round(plan.length / (60 / ga.bpm));
+    check(
+      `${style}: starts on a phrase of the outgoing song and a downbeat of the incoming one, beats locked, tempo matched`,
+      phrase && inBar && locked >= overlapBeats.length - 1 && Math.abs(plan.rate - 124 / 118) < 0.003 && beats === (style === 'blend' ? 32 : 16),
+      `${plan.why}; ${locked}/${overlapBeats.length} beats meet`,
+    );
+  }
+  const clash = planTransition({ outDuration, outGrid: ga, inGrid: { ...gb, key: k(6, true) }, crossfade: 0, mode: 'mix', style: 'blend' });
+  check('songs in clashing keys get half the overlap', Boolean(clash) && Math.round(clash.length / (60 / ga.bpm)) === 16, clash?.why ?? 'none');
+  const slow = { ...gb, bpm: 90, beats: gb.beats.map((t) => t * (118 / 90)) };
+  const far = planTransition({ outDuration, outGrid: ga, inGrid: slow, crossfade: 0, mode: 'mix', style: 'fade' });
+  check('tempos too far apart: no stretching, just a short overlap on the downbeats', Boolean(far) && far.rate === 1 && far.aligned && Math.round(far.length / (60 / ga.bpm)) <= 8, far?.why ?? 'none');
+  const fallback = planTransition({ outDuration, outGrid: ga, inGrid: null, crossfade: 0, mode: 'mix', style: 'blend' });
+  check('no grid for the next song yet: a plain crossfade of at least 6 seconds', fallback?.style === 'crossfade' && fallback.length >= 6 && !fallback.aligned);
+  const plain = planTransition({ outDuration, outGrid: ga, inGrid: gb, crossfade: 4, mode: 'crossfade', style: 'blend' });
+  check('crossfade mode: exactly the chosen length, ending with the song', plain?.style === 'crossfade' && plain.length === 4 && Math.abs(plain.outStart + 4 - outDuration) < 1e-9);
+  check('crossfade off: no plan', planTransition({ outDuration, outGrid: ga, inGrid: gb, crossfade: 0, mode: 'crossfade', style: 'fade' }) === null);
 }
 
 const passed = results.filter((r) => r.ok).length;

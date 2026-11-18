@@ -7,6 +7,7 @@ import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { BeatGrids } from './audio/grids';
+import { planTransition } from './player/transitions';
 import { createHarness } from './debug/harness';
 import { PlaylistLibrary } from './library/playlists';
 import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pickFiles, pickFolder, tracksFromFiles, type IncomingFile } from './player/local';
@@ -320,17 +321,38 @@ player.on('track', (track) => {
 });
 
 // A local file gets a beat grid worked out in the background; until it
-// arrives (and for everything else) the beat is tracked live.
+// arrives (and for everything else) the beat is tracked live. When songs
+// are mixed, the next song's grid is worked out too.
 let gridFor: string | null = null;
 player.on('track', (track) => {
   const id = track?.id ?? null;
   if (id === gridFor) return;
   gridFor = id;
   renderer.setBeatGrid(null);
+  const next = player.upNext;
+  if (settings.get('transitionMode') === 'mix' && next?.source === 'local' && next.file) void beatGrids.forFile(next.file);
   if (track?.source !== 'local' || !track.file) return;
   void beatGrids.forFile(track.file).then((grid) => {
     if (grid && gridFor === id) renderer.setBeatGrid(grid);
   });
+});
+
+// How one song gives way to the next (Settings, Between songs).
+let lastPlan: { key: string; plan: ReturnType<typeof planTransition> } | null = null;
+player.setTransitionPlanner((current, next, duration) => {
+  const crossfade = settings.get('songCrossfade');
+  const local = current.source === 'local' && next.source === 'local';
+  const mode = local ? settings.get('transitionMode') : 'crossfade';
+  if (crossfade <= 0 && mode !== 'mix') return null;
+  const outGrid = local && current.file ? beatGrids.peek(current.file) : null;
+  const inGrid = local && next.file ? beatGrids.peek(next.file) : null;
+  // The queue may have changed since the song started: work out the new next song's grid now.
+  if (mode === 'mix' && next.file && inGrid === undefined) void beatGrids.forFile(next.file);
+  const key = `${current.id}>${next.id}|${crossfade}|${mode}|${settings.get('mixStyle')}|${Math.round(duration)}|${Boolean(outGrid)}|${Boolean(inGrid)}`;
+  if (lastPlan?.key !== key) {
+    lastPlan = { key, plan: planTransition({ outDuration: duration, outGrid, inGrid, crossfade, mode, style: settings.get('mixStyle') }) };
+  }
+  return lastPlan.plan;
 });
 player.on('change', () => {
   route();

@@ -1,9 +1,13 @@
 // The Web Audio graph.
 //
-//   <audio> (local files) ──► outGain ──► speakers
-//          │
-//          └──► localTap ─┐
-//   capture stream ─► captureTap ─┴─► tap ─► splitter ─► analyserL / analyserR
+//   deck A: <audio> ─► low shelf ─► high-pass ─► gain ─┬─► outGain ──► speakers
+//   deck B: <audio> ─► low shelf ─► high-pass ─► gain ─┤
+//                                                     └─► localTap ─┐
+//   capture stream ─► captureTap ───────────────────────────────────┴─► tap ─► analysers
+//
+// Local files play on one deck at a time; during a crossfade or a mix the
+// next song starts on the other deck and the two overlap (see transitions).
+// The filters are only used by mixes (bass swaps, filter rises).
 //
 // Captured audio (system / tab / input device) only ever reaches the analysers.
 // It is never routed to the speakers, otherwise you would hear it twice.
@@ -11,6 +15,50 @@
 import { FFT_SIZE } from './analysis';
 
 export type AnalysisInput = 'local' | 'capture';
+
+/** One of the two players for local files, with its own gain and filters. */
+export class Deck {
+  readonly element: HTMLAudioElement;
+  readonly gain: GainNode;
+  /** Low shelf at 180 Hz: a bass swap pulls this down to about -30 dB. */
+  readonly low: BiquadFilterNode;
+  /** High-pass: a filter rise sweeps it up. Normally out of the way at 10 Hz. */
+  readonly high: BiquadFilterNode;
+
+  constructor(
+    private readonly context: AudioContext,
+    out: AudioNode,
+    tap: AudioNode,
+  ) {
+    this.element = new Audio();
+    this.element.preload = 'auto';
+    // Tempo changes in a mix keep the pitch (Chrome time-stretches).
+    this.element.preservesPitch = true;
+    const source = context.createMediaElementSource(this.element);
+    this.low = context.createBiquadFilter();
+    this.low.type = 'lowshelf';
+    this.low.frequency.value = 180;
+    this.low.gain.value = 0;
+    this.high = context.createBiquadFilter();
+    this.high.type = 'highpass';
+    this.high.frequency.value = 10;
+    this.high.Q.value = 0.8;
+    this.gain = context.createGain();
+    source.connect(this.low).connect(this.high).connect(this.gain);
+    this.gain.connect(out);
+    this.gain.connect(tap);
+  }
+
+  /** Back to plain playback: full gain, filters open, normal speed. */
+  reset() {
+    const now = this.context.currentTime;
+    for (const param of [this.gain.gain, this.low.gain, this.high.frequency]) param.cancelScheduledValues(now);
+    this.gain.gain.setValueAtTime(1, now);
+    this.low.gain.setValueAtTime(0, now);
+    this.high.frequency.setValueAtTime(10, now);
+    this.element.playbackRate = 1;
+  }
+}
 
 /** 0.1 s of silence as a WAV data URL, used to unlock the player inside a click. */
 function silentWav(): string {
@@ -40,8 +88,9 @@ function silentWav(): string {
 
 export class AudioEngine {
   readonly context: AudioContext;
-  /** The element that plays local files. */
-  readonly element: HTMLAudioElement;
+  /** The two decks local files play on. */
+  readonly decks: [Deck, Deck];
+  private activeDeck = 0;
   /** Everything the visualizers hear passes through this node. */
   readonly tap: GainNode;
 
@@ -62,19 +111,15 @@ export class AudioEngine {
     const ctx = new AudioContext({ latencyHint: 'playback' });
     this.context = ctx;
 
-    this.element = new Audio();
-    this.element.preload = 'auto';
-    const source = ctx.createMediaElementSource(this.element);
-
     this.outGain = ctx.createGain();
-    source.connect(this.outGain).connect(ctx.destination);
-
+    this.outGain.connect(ctx.destination);
     this.tap = ctx.createGain();
     this.localTap = ctx.createGain();
+    this.localTap.connect(this.tap);
     this.captureTap = ctx.createGain();
     this.captureTap.gain.value = 0;
-    source.connect(this.localTap).connect(this.tap);
     this.captureTap.connect(this.tap);
+    this.decks = [new Deck(ctx, this.outGain, this.localTap), new Deck(ctx, this.outGain, this.localTap)];
 
     const splitter = ctx.createChannelSplitter(2);
     // Force stereo so a mono source still feeds both analysers.
@@ -96,17 +141,40 @@ export class AudioEngine {
     this.analyserR.connect(sink);
     sink.connect(ctx.destination);
 
-    // If the element starts while the context is still suspended (the browser
+    // If an element starts while the context is still suspended (the browser
     // hasn't counted a click yet), the audio would play in silence. Try to
     // start it, and say so if the browser refuses.
-    this.element.addEventListener('playing', () => {
-      if (this.element.src === this.silence) return;
-      if (ctx.state === 'running') return;
-      void ctx.resume().catch(() => {});
-      window.setTimeout(() => {
-        if (ctx.state !== 'running' && !this.element.paused) this.onBlocked();
-      }, 600);
-    });
+    for (const deck of this.decks) {
+      const el = deck.element;
+      el.addEventListener('playing', () => {
+        if (el.src === this.silence) return;
+        if (ctx.state === 'running') return;
+        void ctx.resume().catch(() => {});
+        window.setTimeout(() => {
+          if (ctx.state !== 'running' && !el.paused) this.onBlocked();
+        }, 600);
+      });
+    }
+  }
+
+  /** The deck that is playing the current song. */
+  get deck(): Deck {
+    return this.decks[this.activeDeck];
+  }
+
+  /** The other deck, where the next song starts in a crossfade or a mix. */
+  get otherDeck(): Deck {
+    return this.decks[1 - this.activeDeck];
+  }
+
+  /** The element that plays the current local song. */
+  get element(): HTMLAudioElement {
+    return this.deck.element;
+  }
+
+  /** Makes the other deck the current one (when a crossfade or mix hands over). */
+  swapDecks() {
+    this.activeDeck = 1 - this.activeDeck;
   }
 
   /**
@@ -119,30 +187,35 @@ export class AudioEngine {
     if (this.context.state !== 'running') void this.context.resume().catch(() => {});
     if (this.primed) return;
     this.primed = true;
-    const el = this.element;
-    // Already holding a track: it was started from a gesture, nothing to prime.
-    if (el.getAttribute('src')) return;
-    el.src = this.silence;
-    el.play().then(
-      () => {
-        if (el.src !== this.silence) return; // a real track took over meanwhile
-        el.pause();
-        el.removeAttribute('src');
-        el.load();
-      },
-      () => {
-        if (el.src === this.silence) {
+    for (const { element: el } of this.decks) {
+      // Already holding a track: it was started from a gesture, nothing to prime.
+      if (el.getAttribute('src')) continue;
+      el.src = this.silence;
+      el.play().then(
+        () => {
+          if (el.src !== this.silence) return; // a real track took over meanwhile
+          el.pause();
           el.removeAttribute('src');
           el.load();
-        }
-        this.primed = false; // try again on the next gesture
-      },
-    );
+        },
+        () => {
+          if (el.src === this.silence) {
+            el.removeAttribute('src');
+            el.load();
+          }
+          this.primed = false; // try again on the next gesture
+        },
+      );
+    }
   }
 
-  /** True while a priming clip (not real audio) is loaded. */
+  /** True while a priming clip (not real audio) is loaded on the current deck. */
   get priming(): boolean {
     return this.element.src === this.silence;
+  }
+
+  isPriming(el: HTMLAudioElement): boolean {
+    return el.src === this.silence;
   }
 
   private makeAnalyser(): AnalyserNode {
