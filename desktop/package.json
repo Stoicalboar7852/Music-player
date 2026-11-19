@@ -31,6 +31,9 @@
       "server.mjs",
       "tray-icon.mjs",
       "librespot.mjs",
+      "ndi.mjs",
+      "ndi-output.mjs",
+      "stagelink.mjs",
       "preload.cjs",
       "mini-preload.cjs",
       "mini/**",
@@ -38,6 +41,9 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "node_modules/@koromix/**"
+    ],
     "mac": {
       "category": "public.app-category.music",
       "icon": "build/icon-mac.png",
@@ -84,7 +90,7 @@
       ]
     },
     "electronDownload": {
-      "mirror": "https://github.com/castlabs/electron-releases/releases/download/v"
+      "mirror": "https://github.com/castlabs/electron-releases/releases/download/"
     },
     "afterPack": "build/vmp-after-pack.cjs",
     "afterSign": "build/vmp-after-sign.cjs",
@@ -99,6 +105,7 @@
     ]
   },
   "dependencies": {
-    "koffi": "3.3.8"
+    "koffi": "3.3.8",
+    "ws": "8.23.0"
   }
 }

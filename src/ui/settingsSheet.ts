@@ -8,6 +8,7 @@ import type { SpotifyService } from '../services/spotify';
 import { installer } from '../app/install';
 import { clear, h, icon } from './dom';
 import { CYCLE_CHOICES, segmented, select, toggle } from './gallery';
+import { stageSection } from './stageSection';
 
 function field(label: string, control: Node, hint?: string | Node): HTMLElement {
   return h('div', { class: 'field' }, h('label', { text: label }), control, hint ? h('p', { class: 'hint' }, hint) : null);
@@ -274,6 +275,9 @@ export function openSettings(app: App, section?: string) {
         ' as an authorised JavaScript origin (README, YouTube section).',
       ),
     ),
+
+    h('h3', { text: 'Presentation software', 'data-section': 'stage' }),
+    stageSection(app),
 
     h('h3', { text: 'App', 'data-section': 'app' }),
     appSection(),

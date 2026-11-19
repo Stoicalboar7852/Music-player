@@ -18,10 +18,14 @@
 // in preload.cjs; the tray and the mini player send their commands back.
 
 import electron, { app, BrowserWindow, desktopCapturer, ipcMain, Menu, nativeImage, nativeTheme, screen, session, shell, Tray } from 'electron';
+import { randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLibrespot, librespotPath } from './librespot.mjs';
+import { createNdiOutput } from './ndi-output.mjs';
 import { startServer } from './server.mjs';
+import { createStageLink } from './stagelink.mjs';
 import { createMeter, drawGlyph, drawIcon, RESTING } from './tray-icon.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,10 +54,13 @@ let presenter = null;
 let tray = null;
 /** @type {{ url: string, origin: string, port: number, close(): Promise<void> } | null} */
 let server = null;
+/** Cue sync with ProPresenter and FreeShow (stagelink.mjs), and the NDI output (ndi-output.mjs). */
+let stage = null;
+let ndi = null;
 let quitting = false;
 
 /** What the page last reported. */
-let state = { title: '', artist: '', artwork: '', source: '', playing: false, listening: false };
+let state = { title: '', artist: '', artwork: '', source: '', playing: false, listening: false, visualizer: '', presenting: false, overlays: {} };
 let levels = null;
 let levelsAt = 0;
 /** Widevine is installed and ready (castLabs builds only). */
@@ -189,6 +196,57 @@ function presentOn(id) {
     target.once('leave-full-screen', () => setTimeout(fill, 50));
     target.setFullScreen(false);
   } else fill();
+}
+
+// ------------------------------------------- presentation software (stage)
+
+function stageStatus() {
+  return { ...(stage?.status ?? {}), ndi: ndi?.status ?? { state: 'off', detail: '', receivers: 0 } };
+}
+
+function sendStageStatus() {
+  win?.webContents.send('phosphor:stage-status', stageStatus());
+}
+
+// ----------------------------------------------------- the control API key
+
+/**
+ * The key presentation software uses with the control API (see server.mjs),
+ * kept in the app's settings folder so it stays the same across restarts.
+ */
+function apiKey() {
+  const file = path.join(app.getPath('userData'), 'api-key.txt');
+  try {
+    const key = readFileSync(file, 'utf8').trim();
+    if (/^[a-f0-9]{32}$/.test(key)) return key;
+  } catch {
+    /* first run */
+  }
+  const key = randomBytes(16).toString('hex');
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, key);
+  return key;
+}
+
+/** Commands from the control API: the page carries them out and says how it went. */
+let commandSerial = 0;
+const commandReplies = new Map();
+function remoteCommand(name, params) {
+  if (!win) throw new Error('Phosphor is starting');
+  const id = ++commandSerial;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      commandReplies.delete(id);
+      reject(new Error('Phosphor did not answer'));
+    }, 5000);
+    commandReplies.set(id, (reply) => {
+      clearTimeout(timer);
+      commandReplies.delete(id);
+      if (reply?.error) reject(new Error(reply.error));
+      else resolve(reply ?? {});
+    });
+    win.webContents.send('phosphor:remote', { id, name, params });
+  });
 }
 
 // ------------------------------------------------------------ widevine
@@ -416,10 +474,14 @@ function setUpMessages() {
       source: text(next.source, 40),
       playing: Boolean(next.playing),
       listening: Boolean(next.listening),
+      visualizer: text(next.visualizer, 60),
+      presenting: Boolean(next.presenting),
+      overlays: next.overlays && typeof next.overlays === 'object' ? Object.fromEntries(Object.entries(next.overlays).slice(0, 8).map(([k, v]) => [text(k, 20), Boolean(v)])) : {},
     };
     tray?.setToolTip(`Phosphor — ${describe()}`);
     if (isWindows && before !== state.playing) updateTaskbarButtons();
     mini?.webContents.send('mini:state', state);
+    stage?.update(state);
   });
 
   ipcMain.on('phosphor:levels', (event, next) => {
@@ -430,6 +492,22 @@ function setUpMessages() {
   });
 
   ipcMain.handle('phosphor:widevine', (event) => fromPhosphor(event) && widevine);
+
+  // The feed (presenter pages elsewhere) and the control API, for presentation software.
+  ipcMain.handle('phosphor:feed', (event) => (fromPhosphor(event) && server ? { url: server.feedUrl, key: server.hostKey } : null));
+  ipcMain.handle('phosphor:stage-info', (event) =>
+    fromPhosphor(event) && server ? { origin: server.origin, apiKey: server.apiKey, viewers: server.feed.viewers } : null,
+  );
+  ipcMain.on('phosphor:remote-reply', (event, reply) => {
+    if (fromPhosphor(event) && reply && typeof reply === 'object') commandReplies.get(reply.id)?.(reply);
+  });
+  // Settings → Presentation software: NDI, ProPresenter and FreeShow.
+  ipcMain.on('phosphor:stage-configure', (event, config) => {
+    if (!fromPhosphor(event) || !config || typeof config !== 'object') return;
+    stage?.configure(config);
+    ndi?.configure(config.ndi);
+  });
+  ipcMain.handle('phosphor:stage-status', (event) => (fromPhosphor(event) ? stageStatus() : null));
 
   // librespot (optional): start it with the page's Spotify token, stop it, say whether it's bundled.
   ipcMain.handle('phosphor:spot-available', (event) => fromPhosphor(event) && Boolean(spot?.available));
@@ -523,6 +601,20 @@ globalThis.__phosphorDesktop = {
   get presenter() {
     return presenter && !presenter.isDestroyed() ? { bounds: presenter.getBounds(), fullScreen: presenter.isFullScreen(), url: presenter.webContents.getURL() } : null;
   },
+  get apiKey() {
+    return server?.apiKey ?? null;
+  },
+  get feedViewers() {
+    return server?.feed.viewers ?? 0;
+  },
+  get stage() {
+    return { ...stageStatus(), ndiFrames: ndi?.frames ?? 0 };
+  },
+  /** Whether koffi's native part (what NDI is called through) loads from the package. */
+  async ffi() {
+    const { default: koffi } = await import('koffi');
+    return { version: koffi.version ?? 'loaded', pointerSize: koffi.sizeof('void *') };
+  },
   command,
   toggleMini,
 };
@@ -541,7 +633,15 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     nativeTheme.themeSource = 'dark';
-    server = await startServer(path.join(here, 'web'));
+    const key = apiKey();
+    server = await startServer(path.join(here, 'web'), {
+      apiKey: key,
+      onCommand: remoteCommand,
+      status: () => ({ ...state, artwork: undefined }),
+    });
+    server.apiKey = key;
+    stage = createStageLink({ onCommand: remoteCommand, onStatus: sendStageStatus, log: (...args) => console.log('[stage]', ...args) });
+    ndi = createNdiOutput({ BrowserWindow, pageUrl: () => server?.url ?? null, onStatus: sendStageStatus, log: (...args) => console.warn('[ndi]', ...args) });
     prepareWidevine();
     spot = createLibrespot({
       binary: librespotPath(app.isPackaged ? process.resourcesPath : null, here),
@@ -557,6 +657,8 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('will-quit', () => {
+    stage?.stop();
+    ndi?.stop();
     spot?.stop();
     void server?.close();
   });

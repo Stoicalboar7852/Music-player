@@ -40,6 +40,29 @@ contextBridge.exposeInMainWorld('phosphorDesktop', {
       return () => ipcRenderer.removeListener('phosphor:spot-state', listener);
     },
   },
+  // Presentation software: the feed for presenter pages elsewhere, the control API.
+  feed: () => ipcRenderer.invoke('phosphor:feed'),
+  stageInfo: () => ipcRenderer.invoke('phosphor:stage-info'),
+  onRemote: (callback) => {
+    const listener = (_event, request) => {
+      Promise.resolve(callback(request.name, request.params ?? {})).then(
+        (result) => ipcRenderer.send('phosphor:remote-reply', { id: request.id, ...(result && typeof result === 'object' ? result : {}) }),
+        (error) => ipcRenderer.send('phosphor:remote-reply', { id: request.id, error: String(error?.message ?? error) }),
+      );
+    };
+    ipcRenderer.on('phosphor:remote', listener);
+    return () => ipcRenderer.removeListener('phosphor:remote', listener);
+  },
+  // Presentation software: NDI output, ProPresenter and FreeShow cue sync.
+  stage: {
+    configure: (config) => ipcRenderer.send('phosphor:stage-configure', config),
+    status: () => ipcRenderer.invoke('phosphor:stage-status'),
+    onStatus: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('phosphor:stage-status', listener);
+      return () => ipcRenderer.removeListener('phosphor:stage-status', listener);
+    },
+  },
   // The presenter window: which displays it can fill, and filling one.
   presenterDisplays: () => ipcRenderer.invoke('phosphor:presenter-displays'),
   presentOn: (id) => ipcRenderer.send('phosphor:present-on', id),

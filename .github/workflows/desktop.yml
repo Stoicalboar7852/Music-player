@@ -72,6 +72,14 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # koffi (the NDI output calls the NDI runtime through it) ships its
+      # native part per platform; npm installs only this runner's, and the
+      # Mac job also builds for Intel.
+      - name: Add koffi's Intel Mac binary
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        run: npm install --no-save --force @koromix/koffi-darwin-x64@3.3.8
+
       # librespot, for the optional (off by default) Spotify playback through
       # it: built from source for each architecture the installers cover,
       # with rustls (no OpenSSL) and only its pipe output.
@@ -108,7 +116,7 @@ jobs:
           fi
           ls -R "$GITHUB_WORKSPACE/desktop/bin"
 
-      - name: Test the local server and the icons
+      - name: Test the local server, the control API, cue sync, NDI and the icons
         working-directory: desktop
         run: npm test
 

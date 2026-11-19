@@ -7,6 +7,19 @@ import type { Quality } from '../viz/renderer';
 import { Emitter } from './emitter';
 
 export type RepeatMode = 'off' | 'all' | 'one';
+
+/** Desktop app: sending the visuals to presentation software, and following its slides. */
+export interface StageSettings {
+  ndi: { enabled: boolean; name: string; size: '1280x720' | '1920x1080' | '3840x2160'; fps: 30 | 60 };
+  propresenter: { enabled: boolean; host: string; port: number; notes: boolean; macro: string; message: string };
+  freeshow: { enabled: boolean; host: string; port: number; password: string; notes: boolean; variables: boolean; action: string };
+}
+
+export const STAGE_DEFAULTS: StageSettings = {
+  ndi: { enabled: false, name: 'Phosphor', size: '1920x1080', fps: 30 },
+  propresenter: { enabled: false, host: '127.0.0.1', port: 50001, notes: true, macro: '', message: '' },
+  freeshow: { enabled: false, host: '127.0.0.1', port: 5506, password: '', notes: true, variables: true, action: '' },
+};
 export type AutoHide = 'fullscreen' | 'always' | 'never';
 
 export interface Settings {
@@ -41,6 +54,8 @@ export interface Settings {
   googleClientId: string;
   /** How big the presenter window's QR code is. */
   presenterQrSize: 'small' | 'medium' | 'large';
+  /** Desktop app: NDI, ProPresenter and FreeShow (Settings → Presentation software). */
+  stage: StageSettings;
 }
 
 const DEFAULTS: Settings = {
@@ -65,6 +80,7 @@ const DEFAULTS: Settings = {
   youtubeApiKey: '',
   googleClientId: '',
   presenterQrSize: 'medium',
+  stage: STAGE_DEFAULTS,
 };
 
 const KEY = 'phosphor.settings.v1';
@@ -85,6 +101,22 @@ class SettingsStore extends Emitter<{ change: Partial<Settings> }> {
 
   get<K extends keyof Settings>(key: K): Settings[K] {
     return this.values[key];
+  }
+
+  /** The presentation software settings, with any newer fields filled in. */
+  get stage(): StageSettings {
+    const stored = (this.values.stage ?? {}) as Partial<StageSettings>;
+    return {
+      ndi: { ...STAGE_DEFAULTS.ndi, ...stored.ndi },
+      propresenter: { ...STAGE_DEFAULTS.propresenter, ...stored.propresenter },
+      freeshow: { ...STAGE_DEFAULTS.freeshow, ...stored.freeshow },
+    };
+  }
+
+  /** Changes one part of the presentation software settings. */
+  setStage<K extends keyof StageSettings>(part: K, patch: Partial<StageSettings[K]>) {
+    const stage = this.stage;
+    this.set({ stage: { ...stage, [part]: { ...stage[part], ...patch } } });
   }
 
   get all(): Readonly<Settings> {

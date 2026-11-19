@@ -921,6 +921,30 @@ input[type='range']::-moz-range-thumb {
   margin-top: 26px;
 }
 
+.sheet-body h4 {
+  margin: 20px 0 8px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.sheet-body p.hint[data-status] {
+  margin: 8px 0 4px 228px;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .sheet-body p.hint[data-status] {
+    margin-left: 0;
+  }
+}
+
+.sheet-body p.hint[data-status]:empty {
+  display: none;
+}
+
 .tab-panel p,
 .sheet-body p {
   margin: 0 0 12px;

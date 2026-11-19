@@ -16,6 +16,7 @@ This is the `v3` branch. The `v1` and `v2` branches keep the earlier versions un
 - **Eighteen new visualizers, and a Games category.** Lantern Depths, Block Valley, Pastel Horizon, Bullet Box, Pulse Runner and Boost Arena (games: original scenes in the spirit of game genres, not copies of any game), XY Scope, Aurora, Spiral Galaxy, Turntable, Rainy Window, Ferrofluid, Event Horizon, Lava Lamp, Circuit Board, Fireworks, Ripple Pool and Murmuration. Each reacts to bass, mids, treble and beats separately, measured like the others. See [Visualizers](#visualizers).
 - **Spotify inside the desktop app, without the Spotify app.** The desktop app is now built on castLabs' Electron, which has Widevine, so Spotify's own web player plays inside it. Optionally (off by default, with a warning, since Spotify's terms don't allow it) it can play Spotify through the bundled librespot instead, whose sound the visualizers hear directly. See [Spotify](#spotify) and [Desktop app](#desktop-app).
 - **The desktop app stays on Electron.** I checked whether Tauri (Rust with the system's webview) would let it do more: on macOS it can't play Spotify's web player (no Widevine in Safari's engine) and can't hand rendered frames to video software, so it would do less. The decision and the spike that tested Widevine: [docs/desktop-platform.md](docs/desktop-platform.md).
+- **ProPresenter, FreeShow and OBS.** The desktop app sends the visuals to presentation software as an NDI source or a web page, so they can sit behind your lyrics or fill the screen, and follows their slides: commands in a slide's notes (`phosphor: visualizer aurora`) run when it goes live, FreeShow actions and Companion can call a control address, and a new song can trigger a ProPresenter macro or fill FreeShow variables. See [Presenting with ProPresenter, FreeShow or OBS](#presenting-with-propresenter-freeshow-or-obs).
 - **A presenter window for an audience screen.** **Present** (the screen button in the top bar, or <kbd>D</kbd>) opens a second window with nothing but the visuals, for a projector, a TV or a stage screen, while the main window stays your controller. It runs in step with the main window and keeps going when that window is hidden. Overlays switch on from the main window only: a QR code for the song (its Spotify, Apple Music or YouTube page), the title and artist, a logo, blackout and freeze. See [Presenter window](#presenter-window).
 
 ## Version 2
@@ -128,6 +129,64 @@ Streaming songs can't be mixed this way. The services' web players don't give a 
 - If the main window closes or reloads, the presenter fades to black and carries on when it's back.
 
 <img src="docs/screenshots/presenter-panel.png" alt="The Present panel in the main window" width="640">
+
+### Presenting with ProPresenter, FreeShow or OBS
+
+The [desktop app](#desktop-app) can put Phosphor's visuals inside presentation software, behind your lyrics or full screen, and let that software's slides control Phosphor. Everything is in **Settings → Presentation software**.
+
+<img src="docs/screenshots/settings-stage.png" alt="Settings, Presentation software: the web source address, NDI and the control address" width="640">
+
+**Getting the visuals in.** Each way shows exactly what the presenter window shows (same visualizer, overlays, blackout and freeze), switched from the main window:
+
+| | ProPresenter (Mac, Windows) | FreeShow (Mac, Windows) | OBS |
+| --- | --- | --- | --- |
+| **NDI** (Settings: *Send the visuals over NDI*) | Add the NDI source **Phosphor** as a live video input; use it on the media layer behind slides, or full screen | Add the NDI source as media and use it as a slide's background, or alone | DistroAV plugin: NDI source |
+| **Web source** (`http://127.0.0.1:5173/present.html?feed`) | – | Add a **Web** item to a slide (or an overlay) with this address, sized to the slide | Browser source |
+| **Window capture** | – | **Screen** media, picking the Phosphor presenter window | Window capture |
+| **Presenter window full screen** | When ProPresenter isn't using that screen | Same | – |
+
+- **NDI** needs NDI's free **NDI Tools** installed on the computer running Phosphor (from [ndi.video/tools](https://ndi.video/tools/)): Phosphor uses the NDI runtime that comes with them and doesn't include NDI's software itself. Choose 720p, 1080p or 4K, at 30 or 60 frames a second; Settings shows how many programs are receiving it. The receiving program can be on another computer on the same network.
+- **The web source** is served by the desktop app on this computer only (`127.0.0.1`), so the program showing it must run on the same computer. It works with the presenter window closed.
+- **Syphon (Mac) and Spout (Windows) aren't offered.** Both would need native graphics code that couldn't be built and tested here; NDI does the same job in ProPresenter, FreeShow and OBS on both systems.
+
+**Cue sync: their slides control Phosphor.**
+
+- **Commands in slide notes.** Turn on *Follow ProPresenter* (ProPresenter 7.9 or later, with Network turned on in its settings; give Phosphor the port it shows) or *Follow FreeShow* (turn on WebSocket/REST in FreeShow's Settings → Connection; port 5506, plus its password if you set one). Then any line in a slide's notes that starts with `phosphor` runs when that slide goes live:
+
+  ```
+  phosphor: visualizer Event Horizon
+  phosphor: blackout off; qr on
+  phosphor: next
+  ```
+
+  Several commands can share a line, separated by `;`. A slide's commands run once each time it goes live. Other notes are left alone.
+- **FreeShow actions.** FreeShow's **Send REST command** action can call Phosphor's control address directly (method GET), from a slide, a timer or a stage button: `http://127.0.0.1:5173/api/command?key=…&do=visualizer&id=aurora`. Settings shows the address with your key; keep the key private.
+- **Bitfocus Companion, a Stream Deck, scripts:** the same control address. `POST` with a JSON body and `Authorization: Bearer <key>` works too, and `/api/status?key=…` says what's playing.
+
+**And Phosphor tells them about the song.**
+
+- **ProPresenter:** a macro to trigger whenever a new song starts (for example one that switches to your visuals look), and a message to show with the song filled in (give the message tokens named `Title` and `Artist`).
+- **FreeShow:** create text variables named `phosphor_title`, `phosphor_artist` and `phosphor_visualizer` and Phosphor keeps them up to date; show one on a slide as `{$phosphor_title}`. An action to run (by name) whenever a new song starts. Only variables with exactly these names are changed.
+
+**Commands** (the same in notes, as `phosphor: name value`, and in the control address, as `do=name&…`):
+
+| Command | Parameters | |
+| --- | --- | --- |
+| `play`, `pause`, `toggle`, `next`, `previous` | | the player |
+| `volume` | `value` 0–1 (or 0–100) | |
+| `visualizer` | `id` or `name` | the name as the gallery shows it, or its id (below) |
+| `visualizer-next`, `visualizer-previous` | | |
+| `qr`, `title`, `logo`, `blackout`, `freeze` | `on`: `1`/`on`, `0`/`off`, or nothing to toggle | the presenter's overlays |
+| `present` | `on` | open or close the presenter window |
+| `status` | | changes nothing; every command answers with what's playing |
+
+<details><summary>Visualizer ids</summary>
+
+Spectrum (`bars`), Oscilloscope (`scope`), Feedback Trails (`trails`), Tunnel (`tunnel`), Kaleidoscope (`kaleido`), MilkDrop (`milkdrop`), Particle Field (`particles`), Pulse Orb (`orb`), Lattice Flight (`lattice`), Frequency Terrain (`terrain`), Fluid (`fluid`), Album Halo (`radial`), Spectrogram (`spectrogram`), Ridgelines (`ridgelines`), Laser Show (`lasers`), Petals (`petals`), Ringed Planet (`planet`), Crystal Cavern (`cavern`), Ribbons (`ribbons`), Neon Racer (`racer`), Starfighter (`starfighter`), Vector Arcade (`vectors`), Reaction-Diffusion (`reaction`), Life (`life`), Slime Mold (`slime`), XY Scope (`xyscope`), Aurora (`aurora`), Spiral Galaxy (`galaxy`), Turntable (`vinyl`), Rainy Window (`rain`), Ferrofluid (`ferro`), Event Horizon (`blackhole`), Lava Lamp (`lavalamp`), Circuit Board (`circuit`), Fireworks (`fireworks`), Ripple Pool (`ripples`), Murmuration (`flock`), Lantern Depths (`lanterns`), Block Valley (`blocks`), Pastel Horizon (`meadow`), Bullet Box (`bullets`), Pulse Runner (`runner`), Boost Arena (`arena`)
+
+</details>
+
+How it works: the main window's analysis goes to presenter pages over a WebSocket on the app's local server (`/feed`), the same frames the presenter window gets; NDI renders that page in a hidden window and hands each frame to the NDI runtime ([desktop/ndi.mjs](desktop/ndi.mjs)); cue sync uses ProPresenter's documented API (`/v1/status/slide` streamed, `/v1/macro/{id}/trigger`, `/v1/message/{id}/trigger`) and FreeShow's REST API (`get_output`, `get_show`, `get_variables`, `change_variable`, `name_run_action`) ([desktop/stagelink.mjs](desktop/stagelink.mjs)). They're tested against stand-ins for ProPresenter, FreeShow and the NDI runtime, and in the packaged app (see [How it was tested](#how-it-was-tested)); not yet against the real programs, which need a Mac or Windows machine with them installed.
 
 ## Visualizers
 

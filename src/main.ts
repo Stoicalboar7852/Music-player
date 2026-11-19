@@ -7,13 +7,15 @@ import { CaptureError, CaptureManager, detectPlatform } from './audio/capture';
 import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { BeatGrids } from './audio/grids';
-import { connectDesktop, desktop } from './app/desktop';
+import { connectDesktop, connectStage, desktop } from './app/desktop';
 import { registerServiceWorker } from './app/install';
 import { animateFavicon } from './ui/favicon';
 import { planTransition } from './player/transitions';
 import { createHarness } from './debug/harness';
 import { PlaylistLibrary } from './library/playlists';
+import { connectFeed } from './present/feed';
 import { PresenterHost } from './present/host';
+import { connectRemote } from './app/remote';
 import { filesFromDrop, filesFromInput, LocalBackend, loadTagsInBackground, pickFiles, pickFolder, tracksFromFiles, type IncomingFile } from './player/local';
 import { connectMediaSession } from './player/mediaSession';
 import { Player } from './player/player';
@@ -373,8 +375,12 @@ spotify.onStatus(() => route());
 
 // Installable as an app; the tab icon dances while music plays.
 registerServiceWorker();
-// Inside the desktop app: the menu bar or tray visualizer, the mini player.
-connectDesktop({ player, renderer, capture });
+// Inside the desktop app: the menu bar or tray visualizer, the mini player,
+// presenter pages in other programs (the feed) and the control API.
+const reportToDesktop = connectDesktop({ player, renderer, capture, presenter: app.presenter });
+connectFeed(app.presenter);
+connectRemote(app);
+connectStage();
 animateFavicon(() => renderer.audio, () => player.playing || capture.state.active);
 
 // A local file gets a beat grid worked out in the background; until it
@@ -454,6 +460,7 @@ capture.on('change', (state) => {
 renderer.onChange = (def) => {
   topbar.render();
   if (settings.get('visualizer') !== def.id) settings.set({ visualizer: def.id });
+  reportToDesktop?.();
 };
 renderer.onError = (def) => {
   toasts.show(`${def.name} hit a problem on this graphics hardware and was skipped.`, 'error');

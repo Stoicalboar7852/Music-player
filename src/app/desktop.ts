@@ -7,6 +7,8 @@
 // In a browser there is no bridge and none of this runs.
 
 import type { CaptureManager } from '../audio/capture';
+import type { PresenterHost } from '../present/host';
+import { settings, type StageSettings } from './settings';
 import type { Player } from '../player/player';
 import type { Renderer } from '../viz/renderer';
 
@@ -19,6 +21,12 @@ export interface DesktopState {
   playing: boolean;
   /** Capturing system audio or an input. */
   listening: boolean;
+  /** The visualizer showing, by id. */
+  visualizer: string;
+  /** The presenter window (or a page elsewhere) is showing. */
+  presenting: boolean;
+  /** The presenter's overlays. */
+  overlays: Record<string, boolean>;
 }
 
 export interface DesktopLevels {
@@ -43,6 +51,18 @@ interface DesktopBridge {
   presenterDisplays?(): Promise<{ id: number; label: string; primary: boolean }[]>;
   /** Makes the presenter window fill a display (null: the one it is on). */
   presentOn?(id: number | null): void;
+  /** The feed that shares the presenter with pages in other programs (see present/feed.ts). */
+  feed?(): Promise<{ url: string; key: string } | null>;
+  /** What presentation software needs: the app's address, the control API's key, how many pages watch the feed. */
+  stageInfo?(): Promise<{ origin: string; apiKey: string; viewers: number } | null>;
+  /** Presentation software (desktop/stagelink.mjs, desktop/ndi-output.mjs). */
+  stage?: {
+    configure(config: StageSettings): void;
+    status(): Promise<StageStatus | null>;
+    onStatus(callback: (status: StageStatus) => void): () => void;
+  };
+  /** Commands from the control API (/api/command): carry them out and say how it went. */
+  onRemote?(callback: (name: string, params: Record<string, string>) => unknown): () => void;
   /** Whether Widevine is installed (castLabs builds), and a call when it becomes so. */
   widevine?(): Promise<boolean>;
   onWidevine?(callback: () => void): () => void;
@@ -129,10 +149,36 @@ export function bands(spectrum: ArrayLike<number>, count = 24): number[] {
   return out;
 }
 
-export function connectDesktop(deps: { player: Player; renderer: Renderer; capture: CaptureManager }) {
+export interface LinkStatus {
+  state: 'off' | 'connecting' | 'connected' | 'error';
+  detail: string;
+}
+
+export interface StageStatus {
+  propresenter: LinkStatus;
+  freeshow: LinkStatus;
+  ndi: { state: 'off' | 'starting' | 'running' | 'missing' | 'error'; detail: string; receivers: number; runtime?: string };
+}
+
+/** Sends the presentation software settings to the desktop app now and whenever they change. */
+export function connectStage() {
+  const bridge = desktop?.stage;
+  if (!bridge) return;
+  bridge.configure(settings.stage);
+  settings.on('change', (patch) => {
+    if ('stage' in patch) bridge.configure(settings.stage);
+  });
+}
+
+export function connectDesktop(deps: {
+  player: Player;
+  renderer: Renderer;
+  capture: CaptureManager;
+  presenter: PresenterHost;
+}): (() => void) | undefined {
   const bridge = desktop;
   if (!bridge) return;
-  const { player, renderer, capture } = deps;
+  const { player, renderer, capture, presenter } = deps;
   document.documentElement.dataset.desktop = desktopPlatform ?? '';
 
   // What is playing. (Reports can overlap while the artwork is being shrunk:
@@ -156,11 +202,15 @@ export function connectDesktop(deps: { player: Player; renderer: Renderer; captu
       source: track?.source ?? (capture.state.active ? 'capture' : ''),
       playing: player.playing,
       listening: capture.state.active,
+      visualizer: renderer.currentId ?? '',
+      presenting: presenter.status !== 'closed',
+      overlays: { ...presenter.overlays },
     });
   };
   player.on('track', () => void report());
   player.on('change', () => void report());
   capture.on('change', () => void report());
+  presenter.on('change', () => void report());
   void report();
 
   // The music's levels, twenty times a second while there is any.
@@ -186,4 +236,7 @@ export function connectDesktop(deps: { player: Player; renderer: Renderer; captu
     else if (name === 'next') void player.next();
     else if (name === 'previous') void player.previous();
   });
+
+  /** Call when something the app can't watch changes (the visualizer). */
+  return () => void report();
 }

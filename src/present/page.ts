@@ -28,7 +28,17 @@ const canvas = document.getElementById('stage') as HTMLCanvasElement;
 const layer = document.getElementById('overlays') as HTMLElement;
 const id = crypto.randomUUID();
 const channel = new BroadcastChannel(CHANNEL);
-const send = (message: PresenterMessage) => channel.postMessage(message);
+/**
+ * present.html?feed: a page in another program (a FreeShow web item, an OBS
+ * browser source) gets its frames through the desktop app's local server
+ * instead of the BroadcastChannel, which only reaches this browser's windows.
+ */
+const feedMode = new URLSearchParams(location.search).has('feed');
+let socket: WebSocket | null = null;
+const send = (message: PresenterMessage) => {
+  if (!feedMode) channel.postMessage(message);
+  else if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+};
 
 /** This window never reads audio; frames arrive from the main window. */
 const noAudio: RendererAudio = {
@@ -72,7 +82,7 @@ const qrSource = el('small', 'source', qr);
 
 const black = el('div', 'ov ov-black');
 const waiting = el('div', 'ov ov-hint ov-waiting');
-waiting.textContent = 'Waiting for Phosphor… (press Present in the main window)';
+waiting.textContent = feedMode ? 'Waiting for the Phosphor app…' : 'Waiting for Phosphor… (press Present in the main window)';
 const hint = el('div', 'ov ov-hint ov-fullscreen-hint');
 hint.textContent = 'Double-click or press F to fill the screen';
 
@@ -217,17 +227,40 @@ renderer.beforeFrame = () => {
   }
 };
 
-channel.onmessage = (event: MessageEvent<ControllerMessage>) => {
-  const message = event.data;
+function handle(message: ControllerMessage) {
   if (!message || typeof message !== 'object') return;
   if (message.type === 'frame') {
     if (message.to === id) adopt(message.frame);
   } else if (message.type === 'state') {
     applyState(message.state);
   } else if (message.type === 'close') {
-    window.close();
+    // A window Phosphor opened closes; a page in another program goes dark until it's back.
+    if (feedMode) lastFrameAt = 0;
+    else window.close();
   }
-};
+}
+
+if (feedMode) {
+  const connect = () => {
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/feed?role=viewer`);
+    ws.binaryType = 'arraybuffer';
+    socket = ws;
+    ws.onopen = () => send({ type: 'hello', id });
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          handle(JSON.parse(event.data) as ControllerMessage);
+        } catch {
+          /* not ours */
+        }
+      } else adopt(event.data as ArrayBuffer);
+    };
+    ws.onclose = () => window.setTimeout(connect, 1000);
+  };
+  connect();
+} else {
+  channel.onmessage = (event: MessageEvent<ControllerMessage>) => handle(event.data);
+}
 
 // How far behind the main window: from it reading the audio to this window
 // starting to draw that frame (the main window draws what it reads at once;
@@ -342,7 +375,8 @@ function wake() {
   window.clearTimeout(idle);
   idle = window.setTimeout(() => document.body.classList.remove('awake'), 2200);
 }
-window.addEventListener('mousemove', wake);
+// Inside other programs (a FreeShow web item, an NDI frame) nothing shows but the visuals.
+if (!feedMode) window.addEventListener('mousemove', wake);
 document.addEventListener('fullscreenchange', () => {
   document.body.classList.toggle('fullscreen', Boolean(document.fullscreenElement));
 });

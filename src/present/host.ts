@@ -33,8 +33,15 @@ const GONE_MS = 2500;
 /** Frames a presenter asks for are analysed afresh at most this often (the main window's own frames count). */
 const PULL_GAP_MS = 12;
 
+/** A way to reach presenters: the BroadcastChannel, or (desktop app) the feed for pages elsewhere. */
+export interface PresenterTransport {
+  send(message: ControllerMessage): void;
+}
+
 interface Connection {
   id: string;
+  /** How to reach it. */
+  via: PresenterTransport;
   /** Beats, hits and drops since its last frame. */
   events: number;
   seen: number;
@@ -61,6 +68,8 @@ export class PresenterHost extends Emitter<{ change: void }> {
 
   private channel = new BroadcastChannel(CHANNEL);
   private connections = new Map<string, Connection>();
+  private readonly channelTransport: PresenterTransport = { send: (message) => this.channel.postMessage(message) };
+  private transports = new Set<PresenterTransport>([this.channelTransport]);
   private win: Window | null = null;
   private opening = false;
   private screens: ScreenDetails | null = null;
@@ -290,15 +299,28 @@ export class PresenterHost extends Emitter<{ change: void }> {
 
   // --------------------------------------------------------------- messages
 
+  /** Sends to every presenter, wherever it is. */
   private post(message: ControllerMessage) {
-    this.channel.postMessage(message);
+    for (const transport of this.transports) transport.send(message);
+  }
+
+  /** Adds a way to reach presenters (the desktop app's feed); returns how to remove it. */
+  addTransport(transport: PresenterTransport): () => void {
+    this.transports.add(transport);
+    this.sync(true);
+    return () => {
+      this.transports.delete(transport);
+      for (const [id, c] of this.connections) if (c.via === transport) this.connections.delete(id);
+      this.applyPreview();
+      this.emit('change', undefined);
+    };
   }
 
   /** The presenter with this id, added (and sent the state) the first time it is heard from. */
-  private connection(id: string): Connection {
+  private connection(id: string, via: PresenterTransport = this.channelTransport): Connection {
     let c = this.connections.get(id);
     if (!c) {
-      c = { id, events: 0, seen: performance.now(), stats: null };
+      c = { id, via, events: 0, seen: performance.now(), stats: null };
       this.connections.set(id, c);
       this.opening = false;
       this.sync(true);
@@ -321,7 +343,8 @@ export class PresenterHost extends Emitter<{ change: void }> {
     return frame;
   }
 
-  private receive(message: PresenterMessage) {
+  /** A message from a presenter; `via` is how it came (and how to answer). */
+  receive(message: PresenterMessage, via: PresenterTransport = this.channelTransport) {
     if (!message || typeof message !== 'object' || typeof message.id !== 'string') return;
     if (message.type === 'bye') {
       if (this.connections.delete(message.id)) {
@@ -330,13 +353,13 @@ export class PresenterHost extends Emitter<{ change: void }> {
       }
       return;
     }
-    const c = this.connection(message.id);
+    const c = this.connection(message.id, via);
     switch (message.type) {
       case 'hello':
         this.sync(true);
         break;
       case 'pull':
-        this.post({ type: 'frame', to: c.id, frame: this.pullFrame(c.id) });
+        c.via.send({ type: 'frame', to: c.id, frame: this.pullFrame(c.id) });
         break;
       case 'stats':
         c.stats = message.stats;

@@ -12,8 +12,10 @@
 // screenshots next to it.
 
 import { _electron as electron } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const executable = process.argv[2];
 if (!executable) {
@@ -40,7 +42,23 @@ const args = [
   ...(linux ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] : []),
   ...(appDir ? [path.resolve(appDir)] : []),
 ];
-const app = await electron.launch({ executablePath: path.resolve(executable), args, timeout: 120_000 });
+// NDI: where a C compiler is at hand (Linux, macOS), a stand-in for the NDI
+// runtime that records the frames it is sent (test-fixtures/fake-ndi.c).
+// Elsewhere the app should say that the runtime is missing.
+const env = { ...process.env };
+let ndiStats = null;
+if (process.platform !== 'win32') {
+  try {
+    const library = path.join(out, process.platform === 'darwin' ? 'libfake-ndi.dylib' : 'libfake-ndi.so');
+    execFileSync('cc', ['-shared', '-fPIC', '-O1', '-o', library, path.join(path.dirname(fileURLToPath(import.meta.url)), 'test-fixtures', 'fake-ndi.c')]);
+    ndiStats = path.join(out, 'fake-ndi-stats.json');
+    env.PHOSPHOR_NDI_LIBRARY = library;
+    env.FAKE_NDI_STATS = ndiStats;
+  } catch (error) {
+    console.log(`  note  no stand-in NDI runtime (${error.message.split('\n')[0]})`);
+  }
+}
+const app = await electron.launch({ executablePath: path.resolve(executable), args, env, timeout: 120_000 });
 try {
   const page = await app.firstWindow();
   page.on('pageerror', (error) => console.log(`  page error: ${error.message}`));
@@ -150,6 +168,73 @@ try {
       .catch(() => false);
     check('Close presenter closes it', closed);
   } else check('the presenter window opens and draws the visuals from the main window', false, 'no window');
+
+  // Presentation software. The control API, as FreeShow, Companion or a Stream Deck would call it:
+  const serverUrl = await app.evaluate(() => globalThis.__phosphorDesktop.server);
+  const apiKey = await app.evaluate(() => globalThis.__phosphorDesktop.apiKey);
+  const control = await fetch(`${serverUrl}api/command?key=${apiKey}&do=visualizer&id=aurora`).then((r) => r.json(), (error) => ({ error: String(error) }));
+  const switched = await page.waitForFunction(() => window.__phosphor.renderer.currentId === 'aurora', null, { timeout: 10_000 }).then(() => true, () => false);
+  check('the control API carries out a command (as FreeShow, Companion or a Stream Deck send them)', Boolean(control.ok) && control.visualizer === 'aurora' && switched, JSON.stringify(control));
+  const refused = await fetch(`${serverUrl}api/command?key=wrong&do=next`).then((r) => r.status, () => 0);
+  check('...and refuses a command without the key', refused === 401, String(refused));
+
+  // The web source: the presenter as a page another program shows (a FreeShow
+  // web item, an OBS browser source), fed by the main window over the server.
+  await app.evaluate(({ BrowserWindow }, url) => {
+    const w = new BrowserWindow({ width: 640, height: 360, show: true, title: 'feed test' });
+    void w.loadURL(url);
+  }, `${serverUrl}present.html?feed`);
+  let feedPage = null;
+  for (let i = 0; i < 60 && !feedPage; i++) {
+    feedPage = app.windows().find((w) => w.url().includes('present.html?feed')) ?? null;
+    if (!feedPage) await page.waitForTimeout(250);
+  }
+  if (feedPage) {
+    await feedPage.waitForLoadState();
+    const fed = await feedPage.waitForFunction(() => window.__presenter?.renderer.adopted && window.__presenter.state?.visualizer === 'aurora', null, { timeout: 20_000 }).then(() => true, () => false);
+    const viewers = await app.evaluate(() => globalThis.__phosphorDesktop.feedViewers);
+    check('the web source page draws the visuals, fed by the main window', fed && viewers >= 1, `${viewers} page(s) on the feed`);
+    await feedPage.waitForTimeout(1000);
+    await feedPage.screenshot({ path: path.join(out, 'smoke-feed.png') }).catch(() => {});
+    await feedPage.close().catch(() => {});
+  } else check('the web source page draws the visuals, fed by the main window', false, 'no window');
+
+  const ffi = await app.evaluate(() => globalThis.__phosphorDesktop.ffi()).catch((error) => ({ error: String(error).split('\n')[0] }));
+  check('koffi, which NDI is called through, loads from the package', !ffi.error && ffi.pointerSize === 8, JSON.stringify(ffi));
+
+  // NDI, turned on from Settings → Presentation software. (Frame rates follow
+  // the machine: a CI runner or a container without a GPU draws slowly.)
+  await page.evaluate(() => window.__phosphor.settings.setStage('ndi', { enabled: false, size: '1280x720', fps: 30 }));
+  await page.evaluate(() => window.__phosphor.app.openSheet('settings', 'stage'));
+  const ndiSwitch = page.locator('[aria-label="Send the visuals over NDI"]');
+  await ndiSwitch.waitFor({ timeout: 10_000 });
+  await ndiSwitch.scrollIntoViewIfNeeded();
+  await ndiSwitch.click();
+  const ndiState = await app
+    .evaluate(async () => {
+      for (let i = 0; i < 80; i++) {
+        const stage = globalThis.__phosphorDesktop.stage;
+        if (stage.ndi.state !== 'starting' && stage.ndi.state !== 'off' && (stage.ndi.state !== 'running' || stage.ndiFrames > 10)) return stage;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return globalThis.__phosphorDesktop.stage;
+    })
+    .catch((error) => ({ ndi: { state: 'error', detail: String(error) } }));
+  const statusLine = await page.locator('[data-status="ndi"]').textContent().catch(() => '');
+  if (ndiStats) {
+    const stats = existsSync(ndiStats) ? JSON.parse(readFileSync(ndiStats, 'utf8')) : null;
+    check(
+      'NDI: the presenter goes out as a 1280×720 BGRA source with the visuals in it (stand-in runtime)',
+      ndiState.ndi.state === 'running' && stats?.frames >= 10 && stats.width === 1280 && stats.height === 720 && stats.fourcc === 0x41524742 && stats.corrupt === 0 && stats.brightness > 3 && stats.name === 'Phosphor',
+      JSON.stringify({ state: ndiState.ndi, stats }),
+    );
+    check('...and Settings shows it sending, with the receivers counted', /Sending "Phosphor" at 1280×720, 30 fps\. 2 programs are receiving it\./.test(statusLine ?? ''), statusLine ?? '');
+  } else {
+    check('NDI without the NDI runtime installed says to install NDI Tools', (ndiState.ndi.state === 'missing' && /NDI Tools/.test(statusLine ?? '')) || ndiState.ndi.state === 'running', `${ndiState.ndi.state}: ${statusLine}`);
+  }
+  await page.screenshot({ path: path.join(out, 'smoke-settings-stage.png') }).catch(() => {});
+  await ndiSwitch.click().catch(() => {});
+  await page.keyboard.press('Escape').catch(() => {});
 
   // System audio, asked for the way the page asks: from a click (Playwright's
   // click counts as the user's).
