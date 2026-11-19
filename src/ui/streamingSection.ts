@@ -76,7 +76,7 @@ export function streamingSection(app: App): HTMLElement {
     const chosen = settings.get('loopbackDevice');
     const loopbacks = findLoopbacks(inputs);
     const named = inputs.filter((d) => d.label && d.deviceId !== 'default' && d.deviceId !== 'communications');
-    const find = h('button', { class: 'btn small', type: 'button' }, icon('search', 16), named.length ? 'Look again' : 'Find devices');
+    const find = h('button', { class: 'btn small', type: 'button', 'data-find-devices': '' }, icon('search', 16), named.length ? 'Look again' : 'Find devices');
     find.addEventListener('click', () => void refresh(true));
     const picker = h('select', { class: 'input', 'aria-label': 'Loopback device' });
     picker.append(h('option', { value: '', text: named.length ? 'Choose a device…' : 'Press Find devices' }));
@@ -123,8 +123,8 @@ export function streamingSection(app: App): HTMLElement {
     note = '';
     try {
       inputs = ask ? await app.capture.namedInputs() : await app.capture.listInputs();
-      // First time through: pick the best loopback by itself.
-      if (ask && !settings.get('loopbackDevice')) {
+      // Nothing chosen yet: take the loopback device it recognises.
+      if (!settings.get('loopbackDevice')) {
         const best = findLoopbacks(inputs)[0];
         if (best) settings.set({ loopbackDevice: { id: best.deviceId, label: best.label } });
       }

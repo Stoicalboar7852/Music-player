@@ -80,39 +80,39 @@ export function createWelcome(app: App) {
     ),
     h('div', { class: 'welcome-label', text: 'Streaming' }),
     tiles,
-    app.capture.supported
-      ? h(
+    androidBridge
+      ? // The Android app hears what the phone plays, without the microphone.
+        h(
           'button',
-          { class: 'welcome-link', type: 'button', onClick: () => app.openSheet('sources', 'capture') },
+          { class: 'welcome-link', type: 'button', onClick: () => void app.listenToPhone() },
           icon('capture', 18),
-          h('span', null, h('strong', { text: 'Visualize anything playing on this computer' }), h('span', { text: 'Share system or tab audio' })),
+          h('span', null, h('strong', { text: 'Visualize what this phone plays' }), h('span', { text: 'The Spotify app, YouTube Music, any app: no microphone' })),
           icon('chevronRight', 18),
         )
-      : androidBridge
-        ? // The Android app hears what the phone plays, without the microphone.
-          h(
+      : app.capture.supported
+        ? h(
             'button',
-            { class: 'welcome-link', type: 'button', onClick: () => void app.listenToPhone() },
+            { class: 'welcome-link', type: 'button', onClick: () => app.openSheet('sources', 'capture') },
             icon('capture', 18),
-            h('span', null, h('strong', { text: 'Visualize what this phone plays' }), h('span', { text: 'The Spotify app, YouTube Music, any app: no microphone' })),
+            h('span', null, h('strong', { text: 'Visualize anything playing on this computer' }), h('span', { text: 'Share system or tab audio' })),
             icon('chevronRight', 18),
           )
         : // Phones and tablets can't share other apps' audio with a page; the microphone can hear it.
-        h(
-          'button',
-          {
-            class: 'welcome-link',
-            type: 'button',
-            onClick: () =>
-              void app.capture.startInput().then(
-                () => app.toast('Listening through the microphone. Play some music nearby.'),
-                (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
-              ),
-          },
-          icon('mic', 18),
-          h('span', null, h('strong', { text: 'Visualize music playing nearby' }), h('span', { text: 'Listen through the microphone' })),
-          icon('chevronRight', 18),
-        ),
+          h(
+            'button',
+            {
+              class: 'welcome-link',
+              type: 'button',
+              onClick: () =>
+                void app.capture.startInput().then(
+                  () => app.toast('Listening through the microphone. Play some music nearby.'),
+                  (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
+                ),
+            },
+            icon('mic', 18),
+            h('span', null, h('strong', { text: 'Visualize music playing nearby' }), h('span', { text: 'Listen through the microphone' })),
+            icon('chevronRight', 18),
+          ),
     extra,
     browserLimitation() ? h('p', { class: 'note warn', style: 'text-align:left;margin:14px auto 0', text: browserLimitation()! }) : null,
     h('small', null, 'Press ', h('kbd', { text: '?' }), ' for keyboard shortcuts'),

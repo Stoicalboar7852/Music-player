@@ -2131,7 +2131,7 @@ async function loopback() {
   // Settings: choose a loopback device; Find devices asks for the permission and picks BlackHole.
   await page.evaluate(() => window.__phosphor.app.openSheet('settings', 'streaming'));
   await page.click('.streaming-section >> text=A loopback device');
-  await page.click('.streaming-section >> text=Find devices');
+  await page.click('.streaming-section [data-find-devices]');
   await page.waitForFunction(() => window.__phosphor.settings.get('loopbackDevice'), null, { timeout: 10000 }).catch(() => {});
   const chosen = await page.evaluate(() => window.__phosphor.settings.get('loopbackDevice'));
   const statusText = await page.locator('[data-loopback-status]').textContent().catch(() => '');
@@ -2142,16 +2142,22 @@ async function loopback() {
   await page.keyboard.press('Escape');
 
   // A streaming song started without a click (as when a queue moves on): Phosphor listens by itself.
+  // (Playwright's evaluate counts as a click, so the song starts once the browser's
+  // five-second activation window has passed.)
   await page.evaluate(() => {
     window.__mediaCalls = { display: 0, user: 0 };
-    const { app, player } = window.__phosphor;
-    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+    setTimeout(() => {
+      window.__activeAtStart = navigator.userActivation.isActive;
+      const { app, player } = window.__phosphor;
+      player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+    }, 5600);
   });
-  const listening = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 15000 }).then(() => true, () => false);
+  const listening = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 20000 }).then(() => true, () => false);
   await page.waitForTimeout(2500);
   let s = await state(page);
   const calls = await page.evaluate(() => window.__mediaCalls);
-  check('a streaming song makes Phosphor listen to the loopback device by itself: no click, no share dialog', listening && s.capture.kind === 'input' && s.capture.label === 'BlackHole 2ch (Virtual)' && calls.display === 0 && calls.user >= 1, `${JSON.stringify(s.capture)}, getDisplayMedia ${calls.display}×, getUserMedia ${calls.user}×`);
+  const clicked = await page.evaluate(() => window.__activeAtStart);
+  check('a streaming song makes Phosphor listen to the loopback device by itself: no click, no share dialog', listening && clicked === false && s.capture.kind === 'input' && s.capture.label === 'BlackHole 2ch (Virtual)' && calls.display === 0 && calls.user >= 1, `${JSON.stringify(s.capture)}, user activation ${clicked}, getDisplayMedia ${calls.display}×, getUserMedia ${calls.user}×`);
   check('...and what it hears drives the visualizers', s.input === 'capture' && s.level > 0.02, `input ${s.input}, level ${s.level.toFixed(3)}`);
   const bannerHidden = await page.evaluate(() => document.querySelector('.banner').hidden);
   check('...with no banner asking to share', bannerHidden);
@@ -2190,11 +2196,13 @@ async function loopback() {
     };
   });
   const quiet = await open(fresh, 'no permission');
-  await quiet.evaluate(() => {
-    const { app, player } = window.__phosphor;
-    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
-  });
-  await quiet.waitForTimeout(2500);
+  await quiet.evaluate(() =>
+    setTimeout(() => {
+      const { app, player } = window.__phosphor;
+      player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+    }, 5600),
+  );
+  await quiet.waitForTimeout(8500);
   const asked = await quiet.evaluate(() => ({ calls: window.__userMedia, active: window.__phosphor.capture.state.active, banner: document.querySelector('.banner').hidden ? '' : document.querySelector('.banner').innerText }));
   check('without the microphone permission yet, a song starting by itself asks nothing; the banner offers the device', asked.calls === 0 && !asked.active && /Listen to BlackHole 2ch/.test(asked.banner), JSON.stringify(asked));
   await fresh.close();
@@ -2267,18 +2275,22 @@ async function androidApp() {
   });
   check("Spotify follows Widevine there, like the desktop app: its web player when the WebView has it, otherwise the Spotify app", spotifyMode.mode === (spotifyMode.widevine ? 'page' : 'app') && spotifyMode.widevine !== null, JSON.stringify(spotifyMode));
 
-  // Allowed already: a streaming song starting by itself makes Phosphor listen, with no click.
+  // Allowed already: a streaming song starting by itself makes Phosphor listen, with no click
+  // (started after the activation window an evaluate opens).
   await page.evaluate(() => {
     window.__androidPermission = true;
-    const { app, player } = window.__phosphor;
-    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+    setTimeout(() => {
+      const { app, player } = window.__phosphor;
+      player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+    }, 5600);
   });
-  const listening = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).then(() => true, () => false);
+  const listening = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 15000 }).then(() => true, () => false);
   await page.waitForTimeout(3000);
   const s = await state(page);
   const log = await page.evaluate(() => window.__androidLog);
   check('a streaming song makes the app listen to the phone by itself (the visualizer way, once allowed)', listening && s.capture.label === 'This phone' && log.starts.join() === 'visualizer', `${JSON.stringify(s.capture)}, starts ${log.starts.join()}`);
-  check("...and the phone's sound, handed over as PCM, drives the visualizers, beats included", s.input === 'capture' && s.level > 0.05 && s.beats > 0, `input ${s.input}, level ${s.level.toFixed(3)}, ${s.beats} beats`);
+  // (The simulated signal is sparse: thumps and ticks over a quiet tone, so its level stays low.)
+  check("...and the phone's sound, handed over as PCM, drives the visualizers, beats included", s.input === 'capture' && s.level > 0.02 && s.beats >= 2, `input ${s.input}, level ${s.level.toFixed(3)}, ${s.beats} beats`);
   await page.screenshot({ path: path.join(SHOTS, 'android-listening.png') });
 
   // Stopping from the page stops the native side too.
@@ -2290,13 +2302,23 @@ async function androidApp() {
   await page.evaluate(() => {
     window.__androidPermission = false;
     window.__androidLog.starts = [];
-    const { app, player } = window.__phosphor;
-    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip02')], { play: true });
+    setTimeout(() => {
+      const { app, player } = window.__phosphor;
+      player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip02')], { play: true });
+    }, 5600);
   });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(7500);
   const quiet = await page.evaluate(() => ({ starts: window.__androidLog.starts.length, banner: document.querySelector('.banner').hidden ? '' : document.querySelector('.banner').innerText }));
   check('without Android permission yet, nothing is asked out of the blue; the banner offers "Listen to this phone"', quiet.starts === 0 && /Listen to this phone/.test(quiet.banner), JSON.stringify(quiet));
-  await page.click('.banner >> text=Listen to this phone');
+  const reachable = await page.evaluate(() => {
+    const button = [...document.querySelectorAll('.banner button')].find((b) => !b.hidden && /Listen to this phone/.test(b.textContent));
+    const r = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const frame = document.querySelector('.yt-frame:not([hidden])')?.getBoundingClientRect();
+    return { reachable: button.contains(hit), overlapsVideo: Boolean(frame && r.bottom > frame.top && r.top < frame.bottom && r.right > frame.left && r.left < frame.right) };
+  });
+  check("...and on a phone the banner's button sits clear of the YouTube player (it can be tapped, and the player isn't covered)", reachable.reachable && !reachable.overlapsVideo, JSON.stringify(reachable));
+  await page.click('.banner button:visible >> text=Listen to this phone');
   const viaBanner = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 5000 }).then(() => true, () => false);
   check('...which starts listening', viaBanner);
   await browser.close();

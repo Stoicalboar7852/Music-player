@@ -612,31 +612,49 @@ It checks:
 
   | Visualizer | Bass | Mids | Treble | Beats | Motion |
   | --- | ---: | ---: | ---: | ---: | ---: |
-  | Spectrum | 2.4 | 1.7 | 1.8 | 0.9 | 4.5 |
+  | Spectrum | 2.3 | 1.7 | 1.8 | 0.9 | 4.5 |
   | Oscilloscope | 9.7 | 22.7 | 52.6 | 6.0 | 22.8 |
-  | Feedback Trails | 53.0 | 13.0 | 32.5 | 40.4 | 30.1 |
+  | Feedback Trails | 53.0 | 13.0 | 32.6 | 40.4 | 30.1 |
   | Tunnel | 30.6 | 36.0 | 10.9 | 3.2 | 35.4 |
-  | Kaleidoscope | 21.1 | 32.5 | 39.6 | 11.9 | 56.2 |
-  | MilkDrop | 52.9 | 119.6 | 67.3 | n/a* | 18.6 |
+  | Kaleidoscope | 21.0 | 32.5 | 39.6 | 11.9 | 56.2 |
+  | MilkDrop | 52.8 | 119.6 | 67.3 | n/a* | 18.7 |
   | Particle Field | 24.5 | 28.1 | 19.0 | 18.9 | 17.5 |
-  | Pulse Orb | 8.7 | 18.3 | 8.7 | 4.2 | 20.4 |
+  | Pulse Orb | 8.7 | 18.3 | 8.6 | 4.2 | 20.4 |
   | Lattice Flight | 8.9 | 9.9 | 12.9 | 9.7 | 26.1 |
-  | Frequency Terrain | 28.9 | 12.7 | 14.6 | 3.5 | 31.1 |
+  | Frequency Terrain | 28.9 | 12.7 | 14.6 | 3.5 | 31.0 |
   | Fluid | 53.5 | 36.7 | 76.9 | 13.0 | 20.4 |
   | Album Halo | 6.4 | 3.4 | 3.3 | 4.1 | 11.8 |
   | Spectrogram | 16.9 | 11.6 | 10.6 | 1.3 | 23.4 |
-  | Ridgelines | 12.3 | 14.4 | 3.5 | 2.3 | 16.6 |
-  | Laser Show | 3.1 | 3.4 | 1.1 | 4.9 | 14.0 |
+  | Ridgelines | 12.3 | 14.4 | 3.5 | 2.3 | 16.5 |
+  | Laser Show | 3.1 | 3.3 | 1.1 | 4.9 | 14.0 |
   | Petals | 4.4 | 5.5 | 2.6 | 2.4 | 7.7 |
   | Ringed Planet | 5.0 | 6.0 | 2.4 | 4.9 | 9.1 |
   | Crystal Cavern | 74.0 | 52.5 | 51.1 | 50.9 | 43.6 |
-  | Ribbons | 9.5 | 9.2 | 1.6 | 11.0 | 18.2 |
+  | Ribbons | 9.5 | 9.1 | 1.6 | 11.0 | 18.2 |
   | Neon Racer | 5.7 | 6.2 | 4.2 | 5.1 | 9.5 |
-  | Starfighter | 3.6 | 3.4 | 2.8 | 2.7 | 4.6 |
+  | Starfighter | 3.6 | 3.4 | 2.7 | 2.7 | 4.6 |
   | Vector Arcade | 10.0 | 7.6 | 7.2 | 5.3 | 22.4 |
   | Reaction-Diffusion | 23.7 | 29.0 | 22.4 | 11.1 | 26.8 |
   | Life | 11.0 | 2.3 | 19.5 | 10.9 | 22.3 |
   | Slime Mold | 65.1 | 108.1 | 50.1 | 82.8 | 29.3 |
+  | XY Scope | 2.0 | 20.3 | 22.1 | 3.6 | 12.5 |
+  | Aurora | 2.3 | 11.9 | 3.9 | 0.9 | 9.6 |
+  | Spiral Galaxy | 4.2 | 4.5 | 3.5 | 1.6 | 2.9 |
+  | Turntable | 1.3 | 2.9 | 2.1 | 1.4 | 3.7 |
+  | Rainy Window | 3.5 | 3.6 | 3.1 | 1.0 | 7.1 |
+  | Ferrofluid | 6.5 | 2.8 | 1.6 | 4.6 | 6.2 |
+  | Event Horizon | 3.5 | 2.8 | 1.8 | 4.1 | 6.5 |
+  | Lava Lamp | 4.9 | 2.7 | 1.2 | 5.8 | 4.0 |
+  | Circuit Board | 2.0 | 1.9 | 2.0 | 3.1 | 5.6 |
+  | Fireworks | 4.2 | 1.1 | 1.4 | 4.0 | 5.3 |
+  | Ripple Pool | 1.4 | 5.2 | 3.6 | 2.2 | 9.4 |
+  | Murmuration | 6.4 | 4.0 | 2.8 | 6.8 | 6.0 |
+  | Lantern Depths | 8.7 | 10.4 | 9.9 | 1.3 | 4.0 |
+  | Block Valley | 30.1 | 27.8 | 26.9 | 15.5 | 23.9 |
+  | Pastel Horizon | 1.8 | 5.8 | 3.2 | 1.0 | 2.6 |
+  | Bullet Box | 8.2 | 3.4 | 2.8 | 2.8 | 11.0 |
+  | Pulse Runner | 3.0 | 11.7 | 3.7 | 3.6 | 9.4 |
+  | Boost Arena | 8.7 | 6.7 | 5.2 | 9.1 | 9.7 |
 
   Small numbers mean a localised change (one group of bars, a ring), not a weak one. \*MilkDrop presets detect beats from the waveform themselves, so withholding Phosphor's beat signal changes nothing; their bass response covers it.
 - **Rhythm and mixing:** see [How the visuals follow the music](#how-the-visuals-follow-the-music) for the beat-tracking ground truth. The same script checks the mix planner on two copies of the demo track (124 and 118 BPM): keys on the Camelot wheel, each style starting on a phrase of the outgoing song and a downbeat of the incoming one, every beat of the overlap meeting a beat of the other song, the tempo ratio, half-length overlaps for clashing keys, and the fallbacks.

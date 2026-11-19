@@ -175,6 +175,13 @@ body.idle .hud > * {
   color: var(--text-dim);
 }
 
+.chip > span {
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .chip .dot {
   width: 7px;
   height: 7px;
@@ -1534,7 +1541,8 @@ select.compact {
   position: fixed;
   left: 18px;
   bottom: 118px;
-  width: 320px;
+  /* YouTube's players must stay at least 200 × 200. */
+  width: min(320px, calc(100vw - 36px));
   height: 200px;
   border-radius: 14px;
   overflow: hidden;
@@ -1635,6 +1643,16 @@ body.idle .yt-frame {
   .brand span,
   .hide-narrow {
     display: none;
+  }
+  /* No room beside the visualizer switcher: what's being listened to goes just below the top bar. */
+  .chip {
+    position: absolute;
+    top: calc(70px + env(safe-area-inset-top, 0px));
+    left: 18px;
+    max-width: calc(100vw - 36px);
+  }
+  .chip > span {
+    max-width: calc(100vw - 110px);
   }
   .service-tiles {
     grid-template-columns: 1fr;
@@ -2134,13 +2152,24 @@ body.idle .yt-frame {
   }
 }
 
-@media (max-width: 900px) {
-  .drawer,
-  .yt-frame {
-    bottom: calc(168px + env(safe-area-inset-bottom, 0px));
+/* A YouTube video's player sits at the bottom left. Where the banner would
+   overlap it, the banner goes above it (covering the player isn't allowed,
+   and on a phone it would cover the banner's button). */
+@media (max-width: 1440px) {
+  body:has(.yt-frame:not([hidden])) .banner {
+    bottom: calc(330px + env(safe-area-inset-bottom, 0px));
   }
+}
+
+@media (max-width: 900px) {
+  /* The dock takes two rows here: 162 px tall, 18 px up. Keep 10 px clear of it. */
+  .drawer,
+  .yt-frame,
   .banner {
-    bottom: calc(172px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(190px + env(safe-area-inset-bottom, 0px));
+  }
+  body:has(.yt-frame:not([hidden])) .banner {
+    bottom: calc(402px + env(safe-area-inset-bottom, 0px));
   }
   /* The welcome card sits between the top bar and the two-row dock, and scrolls. */
   .welcome {
@@ -2156,6 +2185,13 @@ body.idle .yt-frame {
     .welcome {
       max-height: calc(100dvh - 272px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
     }
+  }
+}
+
+@media (max-width: 560px) {
+  /* Toasts go below the row the listening chip moves to. */
+  .toasts {
+    top: calc(108px + env(safe-area-inset-top, 0px));
   }
 }
 

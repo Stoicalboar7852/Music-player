@@ -278,13 +278,17 @@ const listen = () =>
       );
 const shareTab = desktop
   ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Listen to this computer')
-  : capture.supported
-    ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
-    : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon(phone ? 'capture' : 'mic', 16), phone ? 'Listen to this phone' : 'Listen');
+  : phone
+    ? h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('capture', 16), 'Listen to this phone')
+    : capture.supported
+      ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
+      : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen');
 // For music playing in another program (Spotify Connect), in a browser.
-const shareSystem = capture.supported
-  ? h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Share system audio')
-  : h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: listen }, icon(phone ? 'capture' : 'mic', 16), phone ? 'Listen to this phone' : 'Listen');
+const shareSystem = phone
+  ? h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: listen }, icon('capture', 16), 'Listen to this phone')
+  : capture.supported
+    ? h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Share system audio')
+    : h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: listen }, icon('mic', 16), 'Listen');
 // A loopback device chosen in Settings (browser only): listening needs no share dialog.
 const useLoopback = h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: () => void loopbackListen(true) }, icon('capture', 16), h('span'));
 async function loopbackListen(fromClick: boolean): Promise<boolean> {
