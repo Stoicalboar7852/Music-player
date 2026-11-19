@@ -9,6 +9,7 @@ import { installer } from '../app/install';
 import { clear, h, icon } from './dom';
 import { CYCLE_CHOICES, segmented, select, toggle } from './gallery';
 import { stageSection } from './stageSection';
+import { streamingSection } from './streamingSection';
 
 function field(label: string, control: Node, hint?: string | Node): HTMLElement {
   return h('div', { class: 'field' }, h('label', { text: label }), control, hint ? h('p', { class: 'hint' }, hint) : null);
@@ -231,12 +232,8 @@ export function openSettings(app: App, section?: string) {
       'Fade: an even crossfade across whole bars. Blend: the next song comes in without its bass, the basslines swap on a downbeat, then the first song fades. Rise: the first song is filtered upward into a build and the next one drops in on the new phrase.',
     ),
 
-    h('h3', { text: 'Streaming audio' }),
-    field(
-      'Ask to share this tab automatically',
-      toggle(settings.get('autoShare'), 'Ask to share this tab automatically', (autoShare) => settings.set({ autoShare })),
-      'Streaming services protect their audio, so the visualizers listen to this tab. When you start a streaming song, Chrome asks once to share the tab; click Allow. The desktop app does this without asking.',
-    ),
+    h('h3', { text: 'Streaming audio', 'data-section': 'streaming' }),
+    streamingSection(app),
 
     h('h3', { text: 'Spotify', 'data-section': 'spotify' }),
     h('p', null, 'Needs a Spotify Premium account and a (free) app registered at developer.spotify.com. Full steps are in the README.'),

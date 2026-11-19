@@ -211,8 +211,28 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
     return devices.filter((d) => d.kind === 'audioinput');
   }
 
+  /**
+   * The inputs with their names: the browser hides the names until the
+   * microphone permission is granted, so this asks for it first if needed
+   * (the browser's own prompt, once per site) and closes the input again.
+   */
+  async namedInputs(): Promise<MediaDeviceInfo[]> {
+    let inputs = await this.listInputs();
+    if (inputs.length && inputs.every((d) => d.label)) return inputs;
+    try {
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach((t) => t.stop());
+    } catch (error) {
+      const name = (error as DOMException).name;
+      if (name === 'NotAllowedError') throw new CaptureError('dismissed', 'Permission to use audio inputs was denied, so their names stay hidden.');
+      throw new CaptureError('failed', `Could not list the audio inputs: ${(error as Error).message}`);
+    }
+    inputs = await this.listInputs();
+    return inputs;
+  }
+
   /** Visualize an audio input device (a loopback device, a monitor source, or a microphone). */
-  async startInput(deviceId?: string): Promise<void> {
+  async startInput(deviceId?: string, label?: string): Promise<void> {
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -230,7 +250,12 @@ export class CaptureManager extends Emitter<{ change: CaptureState }> {
       throw new CaptureError('failed', `Could not open the audio input: ${(error as Error).message}`);
     }
     const track = stream.getAudioTracks()[0];
-    this.adopt(stream, 'input', track?.label || 'Audio input');
+    this.adopt(stream, 'input', label || track?.label || 'Audio input');
+  }
+
+  /** Analyses a stream from elsewhere (the Android app's view of what the phone plays) as an input. */
+  adoptStream(stream: MediaStream, label: string) {
+    this.adopt(stream, 'input', label);
   }
 
   private adopt(stream: MediaStream, kind: CaptureKind, label: string) {

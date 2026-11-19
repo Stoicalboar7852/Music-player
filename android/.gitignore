@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+# The web app, built into the app by CI (npm run android:web)
+/app/src/main/assets/

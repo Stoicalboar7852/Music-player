@@ -37,6 +37,8 @@ export interface App {
   playDemo(): Promise<void>;
   /** Opens the browser's share dialog; `thisTab` offers the current tab first. */
   startCapture(opts?: { thisTab?: boolean }): Promise<void>;
+  /** Android app: listens to what the phone plays (no microphone). Resolves true once listening. */
+  listenToPhone(mode?: 'visualizer' | 'capture'): Promise<boolean>;
   toggleFullscreen(): void;
   setVisualizer(id: string): void;
   stepVisualizer(direction: 1 | -1): void;

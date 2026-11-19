@@ -8,6 +8,8 @@ import { createDemoTrack } from './audio/demo';
 import { AudioEngine } from './audio/engine';
 import { BeatGrids } from './audio/grids';
 import { connectDesktop, connectStage, desktop } from './app/desktop';
+import { findLoopbacks, listenToLoopback } from './audio/loopback';
+import { androidBridge, androidCapabilities, PhoneListener } from './app/android';
 import { registerServiceWorker } from './app/install';
 import { animateFavicon } from './ui/favicon';
 import { planTransition } from './player/transitions';
@@ -100,6 +102,9 @@ folderInput.addEventListener('change', () => {
   folderInput.value = '';
 });
 
+// Inside the Android app: what the phone plays, heard without the microphone.
+const phone = androidBridge ? new PhoneListener(engine, capture) : null;
+
 const app: App = {
   engine,
   renderer,
@@ -183,6 +188,15 @@ const app: App = {
       if (error instanceof CaptureError && error.reason === 'no-audio') app.openSheet('sources', 'capture');
     }
   },
+  async listenToPhone(mode = settings.get('phoneListen')) {
+    if (!phone) return false;
+    const result = await phone.start(mode);
+    if (result === 'listening') toasts.show('Listening to this phone: the visualizers follow whatever it plays.');
+    else if (result === 'denied')
+      toasts.show("Phosphor needs Android's \"record audio\" permission to hear what the phone plays (it doesn't use the microphone). Allow it in Android Settings → Apps → Phosphor → Permissions.", 'error');
+    else if (result === 'error') toasts.show(phone.detail || "This phone didn't let Phosphor listen.", 'error');
+    return result === 'listening';
+  },
   toggleFullscreen() {
     if (document.fullscreenElement) void document.exitFullscreen();
     else void document.documentElement.requestFullscreen().catch(() => toasts.show('Fullscreen was blocked by the browser.', 'error'));
@@ -256,20 +270,34 @@ library.on('change', renderWelcomePlaylists);
 // Phones and tablets can't share a tab's audio; there the microphone listens instead.
 const bannerText = h('span');
 const listen = () =>
-  void capture.startInput().then(
-    () => app.toast('Listening through the microphone.'),
-    (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
-  );
+  phone
+    ? void app.listenToPhone()
+    : void capture.startInput().then(
+        () => app.toast('Listening through the microphone.'),
+        (error: unknown) => app.toast(error instanceof Error ? error.message : String(error), 'error'),
+      );
 const shareTab = desktop
   ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Listen to this computer')
   : capture.supported
     ? h('button', { class: 'btn primary small', type: 'button', onClick: () => void app.startCapture({ thisTab: true }) }, "Share this tab's audio")
-    : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon('mic', 16), 'Listen');
+    : h('button', { class: 'btn primary small', type: 'button', onClick: listen }, icon(phone ? 'capture' : 'mic', 16), phone ? 'Listen to this phone' : 'Listen');
 // For music playing in another program (Spotify Connect), in a browser.
 const shareSystem = capture.supported
   ? h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: () => void app.startCapture({ thisTab: false }) }, icon('capture', 16), 'Share system audio')
-  : h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: listen }, icon('mic', 16), 'Listen');
-const banner = h('div', { class: 'banner glass', hidden: true }, bannerText, shareTab, shareSystem);
+  : h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: listen }, icon(phone ? 'capture' : 'mic', 16), phone ? 'Listen to this phone' : 'Listen');
+// A loopback device chosen in Settings (browser only): listening needs no share dialog.
+const useLoopback = h('button', { class: 'btn primary small', type: 'button', hidden: true, onClick: () => void loopbackListen(true) }, icon('capture', 16), h('span'));
+async function loopbackListen(fromClick: boolean): Promise<boolean> {
+  const device = settings.get('loopbackDevice');
+  if (!device) return false;
+  const result = await listenToLoopback(capture, device, { fromClick });
+  if (result === 'listening') app.toast(`Listening to ${device.label}.`);
+  else if (result === 'missing') app.toast(`${device.label} isn't connected. Check it in Settings → Streaming audio, or share this tab's audio instead.`, 'error');
+  else if (result === 'denied') app.toast("This site isn't allowed to use audio inputs. Allow the microphone for it (the icon at the left of the address bar), then try again.", 'error');
+  else if (result === 'failed') app.toast(`${device.label} couldn't be opened.`, 'error');
+  return result === 'listening';
+}
+const banner = h('div', { class: 'banner glass', hidden: true }, bannerText, useLoopback, shareTab, shareSystem);
 
 const dropzone = h('div', { class: 'dropzone' }, 'Drop to add to the queue');
 
@@ -325,20 +353,29 @@ function route() {
   const elsewhere = Boolean(track && app.services.find((s) => s.id === track.source)?.playsOutsidePage);
   shareTab.hidden = elsewhere && !desktop;
   shareSystem.hidden = !(elsewhere && !desktop);
+  // A loopback device hears this tab and other apps alike, with no dialog.
+  const loopback = !desktop && settings.get('streamingListen') === 'loopback' ? settings.get('loopbackDevice') : null;
+  useLoopback.hidden = !loopback;
+  if (loopback) (useLoopback.lastElementChild as HTMLElement).textContent = `Listen to ${loopback.label}`;
+  for (const b of [shareTab, shareSystem]) b.classList.toggle('primary', !loopback);
   if (needsCapture && track && elsewhere && !desktop) {
     // Spotify Connect in the browser: the sound comes from the Spotify app, not this tab.
     bannerText.replaceChildren(
       h('strong', { text: `${SOURCE_NAMES[track.source]} plays in its own app, ` }),
-      capture.supported
-        ? "so the visualizers need this computer's sound: share your entire screen with system audio switched on."
-        : 'so the visualizers can listen through the microphone.',
+      phone
+        ? 'so the visualizers listen to what this phone plays.'
+        : capture.supported
+          ? "so the visualizers need this computer's sound: share your entire screen with system audio switched on."
+          : 'so the visualizers can listen through the microphone.',
     );
   } else if (needsCapture && track) {
     bannerText.replaceChildren(
       h('strong', { text: `${SOURCE_NAMES[track.source]} audio is protected, ` }),
       desktop
         ? 'so the visualizers listen to what this computer plays instead.'
-        : capture.supported
+        : phone
+          ? 'so the visualizers listen to what this phone plays instead.'
+          : capture.supported
           ? 'so the visualizers listen to this tab instead. Share its audio to bring them to life.'
           : "and this browser can't share a tab's audio, so the visualizers can listen through the microphone instead.",
     );
@@ -352,10 +389,32 @@ function route() {
 // recent), open the share dialog straight away instead of leaving the user to
 // find the banner. Only once per session: if they cancel, the banner stays.
 let autoShareTried = false;
+let autoListenFor = '';
 function maybeAutoShare() {
   const track = player.current;
-  if (!track || track.source === 'local' || !player.playing || capture.state.active || autoShareTried) return;
+  if (!track || track.source === 'local' || !player.playing || capture.state.active) return;
   if (app.services.find((s) => s.id === track.source)?.audioInPage) return;
+  // A loopback device: listen by itself (once the microphone permission is
+  // granted it needs no click, so songs that start on their own work too).
+  if (!desktop && settings.get('streamingListen') === 'loopback' && settings.get('loopbackDevice')) {
+    if (autoListenFor === track.id) return;
+    autoListenFor = track.id;
+    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    void loopbackListen(Boolean(activation?.isActive));
+    return;
+  }
+  // The Android app: listen to the phone by itself once Android allows it
+  // (the Visualizer way needs no asking after that; playback capture asks each time).
+  if (phone) {
+    if (autoListenFor === track.id || phone.listening) return;
+    autoListenFor = track.id;
+    const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+    const allowed = androidCapabilities()?.permission;
+    const mode = settings.get('phoneListen');
+    if ((allowed && mode === 'visualizer') || activation?.isActive) void app.listenToPhone(mode);
+    return;
+  }
+  if (autoShareTried) return;
   if (!settings.get('autoShare') || !capture.supported) return;
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (!activation?.isActive) return;
@@ -474,6 +533,10 @@ settings.on('change', (patch) => {
   if ('autoCycle' in patch || 'cycleSeconds' in patch || 'cycleShuffle' in patch) {
     renderer.setAutoCycle(settings.get('autoCycle'), settings.get('cycleSeconds'), settings.get('cycleShuffle'));
   }
+  if ('streamingListen' in patch || 'loopbackDevice' in patch) {
+    autoListenFor = '';
+    route();
+  }
 });
 
 // ---- drag and drop
@@ -572,4 +635,4 @@ window.setInterval(() => dock.tick(), 200);
 window.setInterval(() => topbar.tick(), 50);
 
 // Hooks for the automated verification scripts (see scripts/verify.cjs).
-Object.assign(window, { __phosphor: { app, engine, renderer, player, capture, settings, presenter: app.presenter, harness: createHarness(renderer) } });
+Object.assign(window, { __phosphor: { app, engine, renderer, player, capture, settings, presenter: app.presenter, harness: createHarness(renderer), loopback: { findLoopbacks } } });

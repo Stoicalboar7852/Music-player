@@ -28,6 +28,9 @@
 //                icons, the service worker, installability, offline use, the
 //                animated tab icon, and a phone (microphone instead of capture)
 //   capture      real getDisplayMedia capture of another tab and of this tab
+//   loopback     listening to a loopback device (fake inputs named like
+//                BlackHole) when a streaming song plays: no share dialog
+//   android      the Android app's page side, with a simulated native bridge
 //   spotify      the Spotify integration against a local simulation of
 //                Spotify (see scripts/mocks): sign-in, search, playback, queue
 //   apple        the Apple Music integration against a local simulation of MusicKit
@@ -48,7 +51,7 @@ const arg = (name, fallback) => {
   return hit ? hit.slice(name.length + 3) : fallback;
 };
 const URL_ = arg('url', 'http://127.0.0.1:5173/');
-const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,presenter,desktop,pwa,capture,spotify,apple,youtube').split(',');
+const only = arg('only', 'rhythm,visualizers,reaction,player,playlists,transitions,presenter,desktop,pwa,capture,loopback,android,spotify,apple,youtube').split(',');
 const AUDIO = path.resolve('.verify/audio');
 const SHOTS = path.resolve('docs/screenshots');
 const THUMBS = path.resolve('public/thumbs');
@@ -2067,6 +2070,238 @@ function rhythm() {
   if (run.status !== 0 && !lines.some((l) => /FAIL/.test(l))) check('rhythm: the ground-truth test ran', false, (run.stderr ?? '').slice(0, 300));
 }
 
+// ------------------------------------------------------------------ loopback
+
+async function loopback() {
+  console.log('\n== Loopback devices: streaming visuals without sharing the tab ==');
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  // Chromium's fake inputs play the test track; the page sees them under the
+  // names real loopback devices have (BlackHole on a Mac here).
+  const browser = await chromium.launch({
+    headless: false,
+    args: [...GL_ARGS, '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', `--use-file-for-fake-audio-capture=${path.join(AUDIO, 'signal-check.wav')}`],
+  });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await context.grantPermissions(['microphone']);
+  await installYouTubeMock(context);
+  await context.addInitScript(() => {
+    const NAMES = { 'Fake Default Audio Input': 'Default - MacBook Pro Microphone', 'Fake Audio Input 1': 'BlackHole 2ch (Virtual)', 'Fake Audio Input 2': 'MacBook Pro Microphone' };
+    const enumerate = MediaDevices.prototype.enumerateDevices;
+    MediaDevices.prototype.enumerateDevices = async function () {
+      const list = await enumerate.call(this);
+      return list
+        .filter((d) => !(window.__hideBlackHole && d.label === 'Fake Audio Input 1'))
+        .map((d) => (d.kind === 'audioinput' && d.label ? { deviceId: d.deviceId, groupId: d.groupId, kind: d.kind, label: NAMES[d.label] ?? d.label, toJSON() { return this; } } : d));
+    };
+    window.__mediaCalls = { display: 0, user: 0 };
+    const display = MediaDevices.prototype.getDisplayMedia;
+    MediaDevices.prototype.getDisplayMedia = function (...args) {
+      window.__mediaCalls.display++;
+      return display.apply(this, args);
+    };
+    const user = MediaDevices.prototype.getUserMedia;
+    MediaDevices.prototype.getUserMedia = function (...args) {
+      window.__mediaCalls.user++;
+      return user.apply(this, args);
+    };
+  });
+  const page = await open(context);
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+
+  // Recognising loopback devices by name, as each system names them.
+  const found = await page.evaluate(() => {
+    const f = (labels) => window.__phosphor.loopback.findLoopbacks(labels.map(([deviceId, label]) => ({ deviceId, label, kind: 'audioinput' }))).map((m) => `${m.deviceId}:${m.kind}`).join(',');
+    return {
+      windows: f([['default', 'Default - CABLE Output (VB-Audio Virtual Cable)'], ['communications', 'Communications - Microphone (Realtek(R) Audio)'], ['a1', 'Microphone (Realtek(R) Audio)'], ['a2', 'Stereo Mix (Realtek(R) Audio)'], ['a3', 'CABLE Output (VB-Audio Virtual Cable)']]),
+      german: f([['g1', 'Stereomix (Realtek(R) Audio)'], ['g2', 'Mikrofon (USB Audio)']]),
+      mac: f([['m1', 'MacBook Pro Microphone'], ['m2', 'Loopback Audio'], ['m3', 'BlackHole 2ch (Virtual)']]),
+      linux: f([['l1', 'Built-in Audio Analog Stereo'], ['l2', 'Monitor of Built-in Audio Analog Stereo']]),
+      hidden: f([['h1', ''], ['h2', '']]),
+    };
+  });
+  check(
+    'loopback devices are recognised by name on each system (VB-CABLE, Stereo Mix in other languages, BlackHole, Loopback, PulseAudio/PipeWire monitors), microphones and Windows\' duplicate entries left out',
+    found.windows === 'a3:VB-CABLE,a2:Stereo Mix' && found.german === 'g1:Stereo Mix' && found.mac === 'm3:BlackHole,m2:Loopback' && found.linux === 'l2:Monitor' && found.hidden === '',
+    JSON.stringify(found),
+  );
+
+  // Settings: choose a loopback device; Find devices asks for the permission and picks BlackHole.
+  await page.evaluate(() => window.__phosphor.app.openSheet('settings', 'streaming'));
+  await page.click('.streaming-section >> text=A loopback device');
+  await page.click('.streaming-section >> text=Find devices');
+  await page.waitForFunction(() => window.__phosphor.settings.get('loopbackDevice'), null, { timeout: 10000 }).catch(() => {});
+  const chosen = await page.evaluate(() => window.__phosphor.settings.get('loopbackDevice'));
+  const statusText = await page.locator('[data-loopback-status]').textContent().catch(() => '');
+  const options = await page.locator('.streaming-section select optgroup').evaluateAll((groups) => groups.map((g) => `${g.label}: ${[...g.querySelectorAll('option')].map((o) => o.textContent).join(' | ')}`));
+  check('Settings finds the loopback device and chooses it (loopback devices listed first, microphones apart)', chosen?.label === 'BlackHole 2ch (Virtual)' && /listens to BlackHole 2ch/.test(statusText ?? '') && /^Loopback devices: BlackHole 2ch/.test(options[0] ?? ''), `${JSON.stringify(chosen)} · ${statusText} · ${options.join(' / ')}`);
+  await page.locator('.streaming-section').scrollIntoViewIfNeeded();
+  await page.locator('.sheet').first().screenshot({ path: path.join(SHOTS, 'settings-loopback.png') }).catch(() => {});
+  await page.keyboard.press('Escape');
+
+  // A streaming song started without a click (as when a queue moves on): Phosphor listens by itself.
+  await page.evaluate(() => {
+    window.__mediaCalls = { display: 0, user: 0 };
+    const { app, player } = window.__phosphor;
+    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+  });
+  const listening = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 15000 }).then(() => true, () => false);
+  await page.waitForTimeout(2500);
+  let s = await state(page);
+  const calls = await page.evaluate(() => window.__mediaCalls);
+  check('a streaming song makes Phosphor listen to the loopback device by itself: no click, no share dialog', listening && s.capture.kind === 'input' && s.capture.label === 'BlackHole 2ch (Virtual)' && calls.display === 0 && calls.user >= 1, `${JSON.stringify(s.capture)}, getDisplayMedia ${calls.display}×, getUserMedia ${calls.user}×`);
+  check('...and what it hears drives the visualizers', s.input === 'capture' && s.level > 0.02, `input ${s.input}, level ${s.level.toFixed(3)}`);
+  const bannerHidden = await page.evaluate(() => document.querySelector('.banner').hidden);
+  check('...with no banner asking to share', bannerHidden);
+
+  // The device gone (unplugged, or removed): Phosphor says so and the banner offers both ways.
+  await page.evaluate(() => {
+    window.__phosphor.capture.stop();
+    window.__hideBlackHole = true;
+    const { app, player } = window.__phosphor;
+    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip02')], { play: true });
+  });
+  const toast = await page.waitForSelector('.toast >> text=/isn.t connected/', { timeout: 10000 }).then((el) => el.textContent(), () => '');
+  const banner = await page.waitForFunction(() => !document.querySelector('.banner').hidden, null, { timeout: 5000 }).then(() => page.locator('.banner').innerText(), () => '');
+  check('if the loopback device is missing, Phosphor says so, and the banner offers it and tab sharing', /BlackHole 2ch \(Virtual\) isn.t connected/.test(toast ?? '') && /Listen to BlackHole 2ch/.test(banner) && /Share this tab/.test(banner), `${toast} · ${banner.replace(/\s+/g, ' ')}`);
+
+  // Back again: the banner's button listens (a click this time).
+  await page.evaluate(() => (window.__hideBlackHole = false));
+  await page.click('.banner >> text=Listen to BlackHole 2ch');
+  const back = await page.waitForFunction(() => window.__phosphor.capture.state.active && window.__phosphor.capture.state.label === 'BlackHole 2ch (Virtual)', null, { timeout: 10000 }).then(() => true, () => false);
+  check('...and its Listen button starts listening when the device is back', back);
+
+  // Without the permission granted yet, nothing is asked out of the blue.
+  const fresh = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await installYouTubeMock(fresh);
+  await fresh.addInitScript(() => {
+    localStorage.setItem('phosphor.settings.v1', JSON.stringify({ streamingListen: 'loopback', loopbackDevice: { id: 'x', label: 'BlackHole 2ch (Virtual)' }, quality: 'low' }));
+    const query = Permissions.prototype.query;
+    Permissions.prototype.query = function (d) {
+      return d?.name === 'microphone' ? Promise.resolve({ state: 'prompt', onchange: null }) : query.call(this, d);
+    };
+    window.__userMedia = 0;
+    const user = MediaDevices.prototype.getUserMedia;
+    MediaDevices.prototype.getUserMedia = function (...args) {
+      window.__userMedia++;
+      return user.apply(this, args);
+    };
+  });
+  const quiet = await open(fresh, 'no permission');
+  await quiet.evaluate(() => {
+    const { app, player } = window.__phosphor;
+    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+  });
+  await quiet.waitForTimeout(2500);
+  const asked = await quiet.evaluate(() => ({ calls: window.__userMedia, active: window.__phosphor.capture.state.active, banner: document.querySelector('.banner').hidden ? '' : document.querySelector('.banner').innerText }));
+  check('without the microphone permission yet, a song starting by itself asks nothing; the banner offers the device', asked.calls === 0 && !asked.active && /Listen to BlackHole 2ch/.test(asked.banner), JSON.stringify(asked));
+  await fresh.close();
+  await browser.close();
+}
+
+// ------------------------------------------------------------------- android
+
+async function androidApp() {
+  console.log('\n== Android app: the page side, with a simulated native bridge ==');
+  const { installYouTubeMock } = require('./mocks/youtube.cjs');
+  const { devices } = require('playwright');
+  const browser = await chromium.launch({ headless: false, args: GL_ARGS });
+  const context = await browser.newContext({ ...devices['Pixel 7'] });
+  await installYouTubeMock(context);
+  // What android/…/MainActivity.kt exposes, simulated: start() answers like the
+  // app and then streams 16-bit stereo PCM (a beat: a low thump twice a second,
+  // a tick between) in 40 ms chunks, as base64, the way the app does.
+  await context.addInitScript(() => {
+    const log = (window.__androidLog = { starts: [], stops: 0 });
+    let timer = 0;
+    let t = 0;
+    const chunk = () => {
+      const frames = 1764;
+      const bytes = new Uint8Array(frames * 4);
+      const view = new DataView(bytes.buffer);
+      for (let i = 0; i < frames; i++, t++) {
+        const s = (t % 22050) / 44100;
+        const thump = s < 0.12 ? Math.sin(2 * Math.PI * 70 * s) * (1 - s / 0.12) : 0;
+        const tick = s > 0.25 && s < 0.27 ? Math.sin(2 * Math.PI * 6000 * s) * 0.4 : 0;
+        const v = Math.round((thump * 0.8 + tick + Math.sin((2 * Math.PI * 440 * t) / 44100) * 0.1) * 26000);
+        view.setInt16(i * 4, v, true);
+        view.setInt16(i * 4 + 2, v, true);
+      }
+      let text = '';
+      for (const b of bytes) text += String.fromCharCode(b);
+      return btoa(text);
+    };
+    window.PhosphorAndroid = {
+      capabilities: () => JSON.stringify({ sdk: 34, version: '3.0.0', visualizer: true, playbackCapture: true, permission: Boolean(window.__androidPermission) }),
+      start(mode) {
+        log.starts.push(mode);
+        setTimeout(() => {
+          window.__phosphorNative.state({ state: 'listening', detail: mode });
+          clearInterval(timer);
+          timer = setInterval(() => window.__phosphorNative.audio(chunk()), 40);
+        }, 150);
+      },
+      stop() {
+        log.stops++;
+        clearInterval(timer);
+      },
+    };
+  });
+  const page = await context.newPage();
+  watch(page, 'android');
+  await page.goto(URL_);
+  await page.waitForFunction(() => window.__phosphor);
+  await page.evaluate(() => {
+    window.__phosphor.settings.set({ quality: 'low' });
+    window.__phosphor.renderer.setVisualizer('bars', { immediate: true });
+  });
+
+  const welcome = await page.locator('.welcome-link').allInnerTexts();
+  check('in the Android app, the welcome screen offers to visualize what the phone plays (not the microphone)', welcome.some((t) => /what this phone plays/.test(t)) && !welcome.some((t) => /microphone/i.test(t) && !/no microphone/i.test(t)), welcome.join(' | ').replace(/\s+/g, ' '));
+  await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').widevine !== null, null, { timeout: 5000 }).catch(() => {});
+  const spotifyMode = await page.evaluate(() => {
+    const spotify = window.__phosphor.app.services.find((s) => s.id === 'spotify');
+    return { mode: spotify.mode, widevine: spotify.widevine };
+  });
+  check("Spotify follows Widevine there, like the desktop app: its web player when the WebView has it, otherwise the Spotify app", spotifyMode.mode === (spotifyMode.widevine ? 'page' : 'app') && spotifyMode.widevine !== null, JSON.stringify(spotifyMode));
+
+  // Allowed already: a streaming song starting by itself makes Phosphor listen, with no click.
+  await page.evaluate(() => {
+    window.__androidPermission = true;
+    const { app, player } = window.__phosphor;
+    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip01')], { play: true });
+  });
+  const listening = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 10000 }).then(() => true, () => false);
+  await page.waitForTimeout(3000);
+  const s = await state(page);
+  const log = await page.evaluate(() => window.__androidLog);
+  check('a streaming song makes the app listen to the phone by itself (the visualizer way, once allowed)', listening && s.capture.label === 'This phone' && log.starts.join() === 'visualizer', `${JSON.stringify(s.capture)}, starts ${log.starts.join()}`);
+  check("...and the phone's sound, handed over as PCM, drives the visualizers, beats included", s.input === 'capture' && s.level > 0.05 && s.beats > 0, `input ${s.input}, level ${s.level.toFixed(3)}, ${s.beats} beats`);
+  await page.screenshot({ path: path.join(SHOTS, 'android-listening.png') });
+
+  // Stopping from the page stops the native side too.
+  await page.click('.chip .icon-btn');
+  const stopped = await page.waitForFunction(() => !window.__phosphor.capture.state.active && window.__androidLog.stops > 0, null, { timeout: 5000 }).then(() => true, () => false);
+  check('stopping in the page stops the listening in the app', stopped);
+
+  // Not allowed yet: a song starting by itself asks nothing; the banner offers it.
+  await page.evaluate(() => {
+    window.__androidPermission = false;
+    window.__androidLog.starts = [];
+    const { app, player } = window.__phosphor;
+    player.add([app.services.find((s) => s.id === 'youtube')['videoTrack']('shortclip02')], { play: true });
+  });
+  await page.waitForTimeout(1500);
+  const quiet = await page.evaluate(() => ({ starts: window.__androidLog.starts.length, banner: document.querySelector('.banner').hidden ? '' : document.querySelector('.banner').innerText }));
+  check('without Android permission yet, nothing is asked out of the blue; the banner offers "Listen to this phone"', quiet.starts === 0 && /Listen to this phone/.test(quiet.banner), JSON.stringify(quiet));
+  await page.click('.banner >> text=Listen to this phone');
+  const viaBanner = await page.waitForFunction(() => window.__phosphor.capture.state.active, null, { timeout: 5000 }).then(() => true, () => false);
+  check('...which starts listening', viaBanner);
+  await browser.close();
+}
+
 // ---------------------------------------------------------------- transitions
 
 async function transitions(browser) {
@@ -2594,6 +2829,8 @@ async function desktopApp(browser) {
   if (only.includes('presenter')) await presenter();
   if (only.includes('pwa')) await pwa();
   if (only.includes('capture')) await capture();
+  if (only.includes('loopback')) await loopback();
+  if (only.includes('android')) await androidApp();
   if (only.includes('spotify')) await spotify();
   if (only.includes('apple')) await apple();
   if (only.includes('youtube')) await youtube();

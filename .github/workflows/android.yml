@@ -1,0 +1,83 @@
+name: Android app
+
+# Phosphor for Android (android/, experimental): the web app in a WebView,
+# plus native listening to what the phone plays. Builds the APK and runs the
+# unit tests with the Android SDK that GitHub's Ubuntu image includes.
+#
+# The emulator test (an end-to-end check that the visualizers hear another
+# app's sound) needs an Android system image, and downloading one means
+# accepting Google's Android SDK license. It only runs when the repository
+# variable ANDROID_EMULATOR_TESTS is set to "true" (Settings → Secrets and
+# variables → Actions → Variables): set it only if you accept that license.
+
+on:
+  push:
+    branches: [v3, main]
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'index.html'
+      - 'present.html'
+      - 'vite.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build the web app into the Android app
+        run: |
+          npm ci
+          npm run android:web
+
+      - name: Build the APK and run the unit tests
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug testDebugUnitTest
+
+      - name: Enable KVM for the emulator
+        if: vars.ANDROID_EMULATOR_TESTS == 'true'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Test on an Android emulator
+        if: vars.ANDROID_EMULATOR_TESTS == 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          # With sound (the test plays a signal that the visualizers must hear).
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim
+          working-directory: android
+          script: ./gradlew --no-daemon connectedDebugAndroidTest
+
+      - name: Keep the APK and the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Phosphor-Android
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            android/app/build/outputs/apk/debug/*.apk
+            android/app/build/reports/**

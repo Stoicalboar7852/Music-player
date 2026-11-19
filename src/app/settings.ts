@@ -33,6 +33,20 @@ export interface Settings {
   autoHide: AutoHide;
   /** Open the share-this-tab dialog when a streaming song is started by a click. */
   autoShare: boolean;
+  /**
+   * What the visualizers listen to for streaming songs, in a browser: this
+   * tab (Chrome's share dialog), or a loopback device (no dialog once the
+   * microphone permission is granted; hears other apps too).
+   */
+  streamingListen: 'tab' | 'loopback';
+  /** The loopback device chosen in Settings, by id and name (the id can change if site data is cleared). */
+  loopbackDevice: { id: string; label: string } | null;
+  /**
+   * Android app: how it hears what the phone plays. The Visualizer API (asks
+   * once, then by itself) or playback capture (full quality; Android asks
+   * each time).
+   */
+  phoneListen: 'visualizer' | 'capture';
   /** Seconds songs overlap when one gives way to the next (0 = off). */
   songCrossfade: number;
   /** Local files: a plain crossfade, or a beat-matched mix. */
@@ -68,6 +82,9 @@ const DEFAULTS: Settings = {
   showStats: false,
   autoHide: 'fullscreen',
   autoShare: true,
+  streamingListen: 'tab',
+  loopbackDevice: null,
+  phoneListen: 'visualizer',
   songCrossfade: 0,
   transitionMode: 'crossfade',
   mixStyle: 'blend',

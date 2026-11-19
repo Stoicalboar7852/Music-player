@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Phosphor</string>
+    <string name="listening_channel">Listening</string>
+    <string name="listening_title">Phosphor is listening</string>
+    <string name="listening_text">The visualizers follow what this phone plays.</string>
+</resources>

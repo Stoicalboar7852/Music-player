@@ -13,6 +13,7 @@
 
 import { debug } from '../app/debug';
 import { desktop, widevineAvailable, type SpotState } from '../app/desktop';
+import { androidBridge } from '../app/android';
 import { Emitter } from '../app/emitter';
 import { appBaseUrl, settings } from '../app/settings';
 import type { PcmStream } from '../audio/pcmStream';
@@ -577,6 +578,9 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
    */
   get mode(): 'page' | 'app' | 'librespot' {
     const chosen = settings.get('spotifyPlayback');
+    // The Android app: Spotify's web player where the WebView has Widevine
+    // (the app hears the phone's sound either way), otherwise the Spotify app.
+    if (androidBridge) return chosen === 'app' || this.widevine === false ? 'app' : 'page';
     if (!desktop) return chosen === 'app' ? 'app' : 'page';
     if (chosen === 'librespot') return this.librespotAvailable ? 'librespot' : 'app';
     if (chosen === 'app') return 'app';
@@ -709,6 +713,7 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
 
   constructor() {
     super();
+    if (androidBridge) void this.checkWidevine();
     if (desktop) {
       // Widevine installs at first launch; check now, and again when the app says it's ready.
       void this.checkWidevine();

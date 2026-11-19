@@ -60,6 +60,8 @@ export const installer = new Installer();
 
 export function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
+  // The Android app serves the page from its own files: nothing to cache.
+  if ((window as unknown as { PhosphorAndroid?: unknown }).PhosphorAndroid) return;
   if (!import.meta.env.PROD) {
     // The development server always runs fresh code: drop a worker left
     // behind by a production build served from the same address.

@@ -1,6 +1,7 @@
 // The first screen: every way to start music, including the streaming
 // services with their live connection state. Shown until something plays.
 
+import { androidBridge } from '../app/android';
 import type { App } from '../app/app';
 import { browserLimitation } from '../app/browser';
 import { installer } from '../app/install';
@@ -87,7 +88,16 @@ export function createWelcome(app: App) {
           h('span', null, h('strong', { text: 'Visualize anything playing on this computer' }), h('span', { text: 'Share system or tab audio' })),
           icon('chevronRight', 18),
         )
-      : // Phones and tablets can't share other apps' audio with a page; the microphone can hear it.
+      : androidBridge
+        ? // The Android app hears what the phone plays, without the microphone.
+          h(
+            'button',
+            { class: 'welcome-link', type: 'button', onClick: () => void app.listenToPhone() },
+            icon('capture', 18),
+            h('span', null, h('strong', { text: 'Visualize what this phone plays' }), h('span', { text: 'The Spotify app, YouTube Music, any app: no microphone' })),
+            icon('chevronRight', 18),
+          )
+        : // Phones and tablets can't share other apps' audio with a page; the microphone can hear it.
         h(
           'button',
           {

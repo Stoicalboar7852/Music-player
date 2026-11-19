@@ -921,6 +921,22 @@ input[type='range']::-moz-range-thumb {
   margin-top: 26px;
 }
 
+.sheet-body ol.guide {
+  margin: 2px 0 6px;
+  padding-left: 20px;
+  max-width: 62ch;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+
+.sheet-body ol.guide li {
+  margin: 5px 0;
+}
+
+.sheet-body ol.guide a {
+  color: var(--text);
+}
+
 .sheet-body h4 {
   margin: 20px 0 8px;
   font-size: 12px;

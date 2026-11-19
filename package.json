@@ -15,7 +15,8 @@
     "test-rhythm": "node scripts/rhythm-test.mjs",
     "desktop:web": "vite build --outDir desktop/web --emptyOutDir",
     "desktop": "npm run desktop:web && npm --prefix desktop start",
-    "desktop:dist": "npm run desktop:web && npm --prefix desktop run dist"
+    "desktop:dist": "npm run desktop:web && npm --prefix desktop run dist",
+    "android:web": "vite build --outDir android/app/src/main/assets --emptyOutDir"
   },
   "devDependencies": {
     "jsqr": "^1.4.0",
