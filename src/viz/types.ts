@@ -8,7 +8,7 @@ import type { AudioFrame } from '../audio/analysis';
 import type { GL } from '../gl/util';
 
 /** Gallery categories. */
-export type Family = 'classic' | 'modern' | '3d' | 'retro' | 'simulation';
+export type Family = 'classic' | 'modern' | '3d' | 'retro' | 'simulation' | 'games';
 
 export const FAMILY_NAMES: Record<Family, string> = {
   classic: 'Classic',
@@ -16,6 +16,7 @@ export const FAMILY_NAMES: Record<Family, string> = {
   '3d': '3D',
   retro: 'Retro & arcade',
   simulation: 'Simulations',
+  games: 'Games',
 };
 
 /** Texture units reserved for the shared audio/artwork textures. */
