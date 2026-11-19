@@ -9,9 +9,9 @@ A music player for the browser whose main attraction is its visualizers. Put mus
 - **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, crossfades between songs (and beat-matched DJ mixes between local files), a visualizer gallery, auto-cycling visualizers.
 - **Stack:** Vite + TypeScript, raw WebGL2, Web Audio. No backend and no framework. Runs in Chrome or Edge.
 
-## Version 3 (this branch, in progress)
+## Version 3 (this branch)
 
-This is the `v3` branch. The `v1` and `v2` branches keep the earlier versions unchanged. What's new so far:
+This is the `v3` branch. The `v1` and `v2` branches keep the earlier versions unchanged. What's new:
 
 - **Eighteen new visualizers, and a Games category.** Lantern Depths, Block Valley, Pastel Horizon, Bullet Box, Pulse Runner and Boost Arena (games: original scenes in the spirit of game genres, not copies of any game), XY Scope, Aurora, Spiral Galaxy, Turntable, Rainy Window, Ferrofluid, Event Horizon, Lava Lamp, Circuit Board, Fireworks, Ripple Pool and Murmuration. Each reacts to bass, mids, treble and beats separately, measured like the others. See [Visualizers](#visualizers).
 - **Spotify inside the desktop app, without the Spotify app.** The desktop app is now built on castLabs' Electron, which has Widevine, so Spotify's own web player plays inside it. Optionally (off by default, with a warning, since Spotify's terms don't allow it) it can play Spotify through the bundled librespot instead, whose sound the visualizers hear directly. See [Spotify](#spotify) and [Desktop app](#desktop-app).
@@ -671,19 +671,25 @@ It checks:
 
 ## Status
 
-**Working and verified in a real browser with audio:** local files (all formats listed, tags, embedded and folder cover art, drag and drop, folders), the queue and every control and shortcut, media keys, fullscreen with idle fade, all twenty-five visualizers (each one's reaction to bass, mids, treble and beats measured), the gallery and auto-cycle, system and tab audio capture, beat tracking against signals with known beats, crossfades and DJ-style mixes between local files, the installable app (installability, offline start), and on an emulated iPhone the phone layout and the microphone.
+**Working and verified in a real browser with audio** (`scripts/verify.cjs`, 471 checks on the final run, all passing, plus the 131 reaction checks): local files (all formats listed, tags, embedded and folder cover art, drag and drop, folders), the queue and every control and shortcut, media keys and Now Playing, fullscreen with idle fade, all forty-three visualizers (each one's reaction to bass, mids, treble and beats measured), the gallery and auto-cycle, system and tab audio capture, listening to a loopback device with no share dialog (Chromium's fake inputs, named like BlackHole), beat tracking against signals with known beats, crossfades and DJ-style mixes, playlists across services, the presenter window and its overlays (0 ms behind the main window), the installable app (installability, offline start), the phone layout on emulated phones, and the Android app's page side with a simulated native bridge.
 
-**Verified on real Windows and macOS machines, by GitHub Actions:** the desktop app's installers build (a Windows setup.exe; Mac disk images for Apple silicon and Intel), and on each system the packaged app opens Phosphor, plays the demo, animates its tray or menu bar icon, takes Play/Pause from it, opens the mini player, and is set to play Spotify through the Spotify app. On Windows it also captured the computer's sound without a dialog. On the Mac that step waits for the Screen & System Audio Recording permission, which nobody can grant on a CI machine, so system audio in the Mac app is still unverified.
+**Verified on real Windows and macOS machines, by GitHub Actions:** the installers build (a Windows setup.exe; Mac disk images for Apple silicon and Intel), and on each system the packaged app opens Phosphor; has Widevine installed and usable by the page (what Spotify's web player needs) and plays Spotify in the app itself; bundles librespot (off unless chosen); plays the demo; animates its tray or menu bar icon and takes Play/Pause from it; opens the mini player; opens the presenter window in step with the main window (0 ms) and closes it; carries out a control-API command and refuses one without the key; shows the web source page fed by the main window; loads koffi from the package; and turns on NDI (on the Mac, with a stand-in NDI runtime, sending 1280×720 BGRA frames with the visuals in them; on Windows, where nothing could be compiled, it says to install NDI Tools). On Windows it also captured the computer's sound without a dialog. On the Mac that step waits for the Screen & System Audio Recording permission, which nobody can grant on a CI machine.
 
-**Needs your credentials before it can be tested against the real service:**
+**Built and unit-tested by GitHub Actions, not yet run on a device:** the Android app (the emulator test is opt-in, see [Phosphor for Android](#phosphor-for-android-experimental)).
 
-- Spotify (Client ID + Premium), in both of its modes (this page, and the Spotify app)
-- Apple Music (developer token from a paid developer account + subscription)
+**Needs your credentials, programs or hardware before it can be tested for real:**
+
+- Spotify (Client ID + Premium): in the browser; in the desktop app's own web player, which may need the app VMP-signed through castLabs' free EVS account (see [Desktop app](#desktop-app)); through the Spotify app; and through librespot (the sandbox couldn't reach Spotify's servers at all).
+- Apple Music (developer token from a paid developer account + subscription). Apple Music in the desktop app is untested.
 - YouTube links work without anything, but could not be tried against real YouTube from the build environment; search additionally needs an API key, and your own playlists a Google client ID.
+- ProPresenter and FreeShow: tested against stand-ins that follow their documented APIs, not the real programs. NDI: tested against a stand-in for the NDI runtime, not the real one (which comes with NDI Tools; Phosphor never includes NDI's SDK, whose licence wasn't mine to accept).
+- Loopback devices: tested with Chromium's fake inputs under real devices' names, not with BlackHole or VB-CABLE themselves.
+- The Android app on a real phone, with the Spotify app.
 
 **Not verifiable here, and worth knowing:**
 
-- The build environment had no network access to Spotify, Apple or YouTube and no GPU (rendering used a software rasteriser), so the integrations were tested against simulations of the services, and frame rates here say nothing about real hardware. I expect a typical laptop GPU to hold 60 fps at 1080p, but I could not measure that. The heaviest visualizers are the raymarched ones (Pulse Orb, Lattice Flight, Crystal Cavern) and the Particle Field; Auto quality lowers the internal resolution when frames drop (verified to work, under software rendering), and **Settings → Quality → Low** goes further. Turn on **Settings → Show frame rate** to see what yours does.
-- Whole-system audio on macOS depends on your macOS and Chrome versions (see the table above); tab audio works everywhere. In the desktop app on a Mac it depends on Chromium's support in Electron (see [Desktop app](#desktop-app)).
-- Real phones: the installable app, the microphone mode and the phone layout were tested on an emulated iPhone in Chromium, not on a real phone or in Safari.
+- The build environment had no network access to Spotify, Apple or YouTube and no GPU (rendering used a software rasteriser), so the integrations were tested against simulations of the services, and frame rates here say nothing about real hardware. I expect a typical laptop GPU to hold 60 fps at 1080p, but I could not measure that. The heaviest visualizers are the raymarched ones (Pulse Orb, Lattice Flight, Crystal Cavern, Ferrofluid, Event Horizon) and the Particle Field; Auto quality lowers the internal resolution when frames drop, and **Settings → Quality → Low** goes further. Turn on **Settings → Show frame rate** to see what yours does. NDI output renders a second copy of the visuals, so it costs more again.
+- Whole-system audio on macOS depends on your macOS and Chrome versions (see the table above); tab audio works everywhere. In the desktop app on a Mac it uses Apple's CoreAudio tap (macOS 14.2 and later) and asks for permission.
+- Syphon and Spout outputs aren't offered (NDI does the same job in ProPresenter, FreeShow and OBS).
+- iPhone and iPad: no native app (on hold, see [Phosphor for Android](#phosphor-for-android-experimental)); the installable web app was tested on an emulated iPhone in Chromium, not on a real phone or in Safari.
 - M4A/AAC playback relies on Chrome's or Edge's AAC decoder (plain Chromium builds lack it).
