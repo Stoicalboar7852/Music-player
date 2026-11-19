@@ -4,7 +4,7 @@ A music player whose main attraction is its visualizers. Put music on, go fullsc
 
 ![Album Halo, coloured from the cover art](docs/hero.png)
 
-It plays local files, whatever your computer is playing (system or tab audio), Spotify, Apple Music and YouTube / YouTube Music. It's built with Vite, TypeScript, WebGL2 and Web Audio, needs no backend, and runs in Chrome or Edge, as an app you can install (on a computer or a phone), or as a desktop app for macOS and Windows.
+It plays local files, whatever your computer is playing (system or tab audio), Spotify, Apple Music and YouTube / YouTube Music. It's built with Vite, TypeScript, WebGL2 and Web Audio, needs no backend, and runs in Chrome or Edge, as an app you can install (on a computer or a phone), or as a desktop app for macOS and Windows (and, from v3, an experimental Android app).
 
 > **This branch only holds this page.** The app lives on the branches below. Pick one first.
 
@@ -14,9 +14,9 @@ It plays local files, whatever your computer is playing (system or tab audio), S
 | --- | --- | --- |
 | [**v1**](../../tree/v1) | The first complete version, kept as it was: 12 visualizers, local files, system audio capture, Spotify, Apple Music and YouTube. | You want the stable version. |
 | [**v2**](../../tree/v2) | The new version: everything in v1, plus the fixes and features listed [below](#whats-new-in-v2): 25 visualizers, beat tracking, crossfades and DJ mixes, playlists across services, a phone-friendly installable app and a desktop app. | You want the newest features. It has had less time with the real streaming services than v1 (see its README). |
-| [**v3**](../../tree/v3) | Work in progress: everything in v2, plus the plan [below](#coming-in-v3) as it lands. | You want to follow the newest work. |
+| [**v3**](../../tree/v3) | The newest version: everything in v2, plus what's listed [below](#whats-in-v3): 43 visualizers with a Games category, a presenter window for an audience screen, Spotify inside the desktop app, ProPresenter, FreeShow and OBS integration, streaming visuals without sharing the tab, and an experimental Android app. | You want the newest features. Parts of it have only been tested against simulations of the services and programs it talks to so far (see its README). |
 
-To get the code, open the branch, click the green **Code** button and choose **Download ZIP**. Or, with git: `git clone --branch v1 <this repository's URL>` (use `v2` for the newer version).
+To get the code, open the branch, click the green **Code** button and choose **Download ZIP**. Or, with git: `git clone --branch v1 <this repository's URL>` (use `v2` or `v3` for the newer versions).
 
 ## Quick start
 
@@ -79,15 +79,16 @@ All of it is on the [v2](../../tree/v2) branch; its README has the details.
    - **Install it** from Chrome or Edge on a computer, Chrome on Android, or Safari on iPhone and iPad (Share, Add to Home Screen). It opens in its own window and works offline with your own files. Phones can't share other apps' audio with a page, so there it listens through the microphone.
    - **A desktop app for macOS and Windows,** with a live visualizer in the macOS menu bar or the Windows tray and a mini player under it. It listens to the whole computer without the share dialog, shows as Phosphor in Now Playing, and plays Spotify through the Spotify app. Download it from the repository's **Actions** tab: open the latest **Desktop app** run and get **Phosphor-macOS** (disk images for Apple silicon and Intel Macs) or **Phosphor-Windows** (an installer) under *Artifacts*. Those downloads are kept for 14 days; tagging a version (for example `v2.0.0`) makes a permanent release with the installers attached. They aren't signed with a paid certificate, so the first launch needs an extra click; the v2 README explains it.
 
-## Coming in v3
+## What's in v3
 
-Work happens on the [v3](../../tree/v3) branch, in this order:
+The [v3](../../tree/v3) branch, in the order it was planned:
 
-1. **Presenter view:** a second window with only the visuals, for a projector or TV, full screen on the display you choose. The window you control from keeps every control, and can show a QR code for the song, the title and artist, a logo, blackout or freeze on the audience screen.
-2. **More visualizers,** with a new Games category: original designs inspired by the feel of games such as Hollow Knight, Minecraft, Planet of Lana, Undertale and Deltarune, Geometry Dash and Rocket League (no characters, names, art or music from them).
-3. **Desktop platform:** comparing Electron with Tauri (Rust), and moving to whatever does the most.
-4. **Spotify inside the desktop app** without the Spotify app open: Spotify's own web player through a Widevine-enabled build first, and an unofficial Spotify Connect receiver (librespot) as an off-by-default option.
-5. **No more tab sharing in the browser,** as far as browsers allow: a one-time setup that lets Phosphor listen to the computer by itself on every visit.
-6. **FreeShow and ProPresenter:** Phosphor's visuals on their audience output (behind lyrics or full screen) through NDI, Syphon, Spout or a web source, and following their cues.
-7. **Phones:** a native app only if it's the only way to visualize Spotify without the microphone.
+1. **Presenter view:** **Present** opens a second window with only the visuals, for a projector, a TV or a stage screen, full screen on the display you choose, in step with the main window (0 ms behind in the tests). The main window stays the controller and switches overlays on the audience screen: a QR code for the song (its Spotify, Apple Music or YouTube page), the title and artist, a logo, blackout and freeze.
+2. **Eighteen more visualizers (43 in all), with a Games category:** original scenes in the spirit of game genres (a lantern-lit cave kingdom, a voxel valley, a painterly meadow, bullet dodging, a rhythm runner, rocket cars and a ball), with no characters, names, art or music from any game, plus an XY scope, an aurora, a spiral galaxy, a turntable, a rainy window, ferrofluid, a black hole, a lava lamp, a circuit board, fireworks, a ripple pool and a murmuration. Each one's reaction to bass, mids, treble and beats is measured.
+3. **Desktop platform:** compared with Tauri, Electron does more for Phosphor (Spotify's web player and video output need Chromium), so the desktop app stays on Electron, now castLabs' build with Widevine.
+4. **Spotify inside the desktop app,** without the Spotify app: Spotify's own web player plays in it. Optionally (off by default, with a warning, since Spotify's terms don't allow it) it plays through the bundled librespot, whose sound the visualizers hear directly.
+5. **No tab sharing in the browser:** set up a free loopback device once (BlackHole on a Mac, VB-CABLE or Stereo Mix on Windows, a monitor input on Linux) and Phosphor listens to it by itself whenever a streaming song plays, with no dialog. Tab sharing stays as the default.
+6. **ProPresenter, FreeShow and OBS:** the desktop app sends the visuals as an NDI source (using the NDI Runtime from NDI's free NDI Tools) or a web page, behind lyrics or full screen, and follows their slides: commands in a slide's notes, FreeShow actions and Companion buttons through a control address, and a new song can trigger a ProPresenter macro or fill FreeShow variables. Syphon and Spout aren't offered; NDI does the same job in all three.
+7. **Phones:** a native app turned out to be the only way to visualize Spotify on a phone without the microphone, so there's an experimental Android app (built and unit-tested by GitHub Actions, not yet tried on a real phone). iOS waits for a paid Apple developer account.
 
+Download the desktop app or the Android app from the repository's **Actions** tab: the latest **Desktop app** run (Phosphor-macOS, Phosphor-Windows) or **Android app** run (Phosphor-Android), under *Artifacts*. The [v3 README](../../tree/v3#readme) has the details, setups and what still needs testing with real services.
