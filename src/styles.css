@@ -1025,6 +1025,10 @@ kbd {
   justify-self: start;
 }
 
+.hint.warn {
+  color: #ffb38a;
+}
+
 .field.stack {
   grid-template-columns: 1fr;
 }

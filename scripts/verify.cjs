@@ -474,9 +474,9 @@ async function visualizers(browser) {
   const hide = await page.addStyleTag({ content: '.hud, .toasts { display: none !important; }' });
 
   const ids = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.id));
-  check('at least twenty-four visualizers are registered (twelve new in v2)', ids.length >= 24, `${ids.length}`);
+  check('at least forty visualizers are registered (eighteen new in v3)', ids.length >= 40, `${ids.length}`);
   const families = await page.evaluate(() => window.__phosphor.renderer.defs.map((d) => d.family));
-  const counts = ['classic', 'modern', '3d', 'retro', 'simulation'].map((f) => `${f} ${families.filter((x) => x === f).length}`);
+  const counts = ['classic', 'modern', '3d', 'retro', 'simulation', 'games'].map((f) => `${f} ${families.filter((x) => x === f).length}`);
   check('every gallery category has at least three', counts.every((c) => Number(c.split(' ')[1]) >= 3), counts.join(', '));
 
   for (const id of ids) {
@@ -1487,6 +1487,127 @@ async function spotify() {
     .then(() => true, () => false);
   check("switching back to this page's player reconnects Spotify's web player", backToPage);
 
+  // ---- the desktop app's librespot mode (optional): a Connect device whose audio plays in the page.
+  // The same tab, reloaded as the desktop app with its bridge stood in for. The stand-in librespot
+  // turns the simulated Spotify device into librespot's and streams a steady beat, as its pipe output would.
+  await context.exposeBinding('__librespotStart', () => {
+    mock.spotifyApp.become('mock-librespot', 'Phosphor (librespot)');
+    mock.spotifyApp.open();
+    return true;
+  });
+  await context.exposeBinding('__librespotStop', () => {
+    mock.spotifyApp.quit();
+    mock.spotifyApp.become('mock-app-device', 'Mock MacBook');
+  });
+  await context.addInitScript(() => {
+    if (localStorage.getItem('phosphor.test.desktop') !== '1') return;
+    const audio = new Set();
+    const states = new Set();
+    let timer = 0;
+    window.__spotLog = { starts: [], stops: 0 };
+    window.phosphorDesktop = {
+      platform: 'linux',
+      sendState() {},
+      sendLevels() {},
+      onCommand: () => () => {},
+      widevine: async () => false,
+      onWidevine: () => () => {},
+      spot: {
+        available: async () => true,
+        start: (options) => {
+          window.__spotLog.starts.push(options);
+          states.forEach((cb) => cb({ status: 'starting', available: true, log: '' }));
+          void window.__librespotStart().then(() => states.forEach((cb) => cb({ status: 'ready', available: true, log: 'Authenticated as "tester"' })));
+          let frame = 0;
+          clearInterval(timer);
+          timer = setInterval(() => {
+            const n = 4410;
+            const pcm = new Int16Array(n * 2);
+            for (let i = 0; i < n; i++) {
+              const t = (frame + i) / 44100;
+              const v = Math.sin(2 * Math.PI * 55 * t) * Math.exp(-(t % 0.5) * 12) * 20000 + Math.sin(2 * Math.PI * 660 * t) * 2500;
+              pcm[i * 2] = pcm[i * 2 + 1] = v;
+            }
+            frame += n;
+            audio.forEach((cb) => cb(new Uint8Array(pcm.buffer)));
+          }, 100);
+        },
+        stop: () => {
+          clearInterval(timer);
+          window.__spotLog.stops++;
+          void window.__librespotStop();
+        },
+        onAudio: (cb) => (audio.add(cb), () => audio.delete(cb)),
+        onState: (cb) => (states.add(cb), () => states.delete(cb)),
+      },
+    };
+  });
+  await page.evaluate(() => {
+    window.__phosphor.player.clear();
+    window.__phosphor.capture.stop();
+    localStorage.setItem('phosphor.test.desktop', '1');
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor?.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 15000 }).catch(() => {});
+  const desktopMode = await page.evaluate(async () => {
+    const service = window.__phosphor.app.services.find((s) => s.id === 'spotify');
+    await new Promise((r) => setTimeout(r, 500));
+    return { mode: service.mode, widevine: service.widevine, librespot: service.librespotAvailable };
+  });
+  check(
+    'in the desktop app, Spotify plays in the app when Widevine is there (else in the Spotify app), and librespot is offered',
+    desktopMode.mode === (desktopMode.widevine ? 'page' : 'app') && desktopMode.librespot === true,
+    JSON.stringify(desktopMode),
+  );
+  await page.keyboard.press(',');
+  const offer = (await page.locator('.sheet[aria-label="Settings"]').innerText().catch(() => '')).match(/Plays in[\s\S]{0,1200}/)?.[0] ?? '';
+  await page.evaluate(() => window.__phosphor.settings.set({ spotifyPlayback: 'librespot' }));
+  await page.waitForTimeout(300);
+  const warning = await page.locator('.sheet[aria-label="Settings"] .hint.warn').innerText().catch(() => '');
+  check("Settings offers librespot, and choosing it shows the warning about Spotify's terms", /librespot/.test(offer) && /terms of use don't allow unofficial clients/.test(warning), warning.slice(0, 90));
+  await page.keyboard.press('Escape');
+  await queueSpotify(['short1', 'short2']);
+  const libPlaying = await page
+    .waitForFunction(() => window.__phosphor.player.playing && window.__phosphor.player.position > 1.5, null, { timeout: 20000 })
+    .then(() => true, () => false);
+  await page.waitForTimeout(1500);
+  const lib = await page.evaluate(() => {
+    const service = window.__phosphor.app.services.find((s) => s.id === 'spotify');
+    return {
+      starts: window.__spotLog.starts.map((o) => ({ name: o.name, token: Boolean(o.token) })),
+      received: service.pcmStream?.received ?? 0,
+      input: window.__phosphor.engine.analysisInput,
+      capture: window.__phosphor.capture.state.active,
+      banner: !document.querySelector('.banner').hidden,
+      level: window.__phosphor.renderer.audio.level,
+    };
+  });
+  const device = mock.spotifyApp.state();
+  check(
+    'librespot mode: librespot is started with the page\'s Spotify token, and the song plays on its device',
+    libPlaying && lib.starts.length === 1 && lib.starts[0].token && lib.starts[0].name === 'Phosphor (librespot)' && device.track === 'spotify:track:short1' && device.playing,
+    JSON.stringify({ starts: lib.starts, device: device.track, playing: device.playing }),
+  );
+  check(
+    "...and its audio plays in the page, where the visualizers hear it directly: no capture, no share banner",
+    lib.received > 44100 && lib.input === 'local' && !lib.capture && !lib.banner && lib.level > 0.05,
+    JSON.stringify(lib),
+  );
+  const volumeBefore = device.commands.filter((c) => c.startsWith('PUT volume')).length;
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.5));
+  await page.waitForTimeout(400);
+  const libVolume = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').pcmStream?.speaker.gain.value ?? -1);
+  check("...the volume is applied to that audio in the page (librespot's own is fixed)", Math.abs(libVolume - 0.25) < 0.03 && mock.spotifyApp.state().commands.filter((c) => c.startsWith('PUT volume')).length === volumeBefore, `gain ${libVolume.toFixed(3)}`);
+  await page.evaluate(() => window.__phosphor.player.setVolume(0.8));
+  await page.evaluate(() => window.__phosphor.player.clear());
+  await page.evaluate(() => window.__phosphor.settings.set({ spotifyPlayback: 'page' }));
+  await page.waitForTimeout(500);
+  const stopped = await page.evaluate(() => ({ stops: window.__spotLog.stops, mode: window.__phosphor.app.services.find((s) => s.id === 'spotify').mode }));
+  check('choosing another option stops librespot', stopped.stops >= 1 && stopped.mode !== 'librespot', JSON.stringify(stopped));
+  await page.evaluate(() => localStorage.removeItem('phosphor.test.desktop'));
+  await page.reload();
+  await page.waitForFunction(() => window.__phosphor?.app.services.find((s) => s.id === 'spotify').status().connected, null, { timeout: 15000 }).catch(() => {});
+
   // ---- staying signed in, and signing out
   const signIns = mock.log.tokenRequests.filter((r) => r.grant_type === 'authorization_code').length;
   await page.reload();
@@ -2398,7 +2519,14 @@ async function desktopApp(browser) {
   await page.waitForTimeout(300);
   const spotifySettings = await page.locator('.sheet[aria-label="Settings"]').innerText();
   const connect = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode);
-  check("Spotify plays through the Spotify app in the desktop app (Electron has no Widevine for its web player), and Settings says so", connect && /Plays in\s*The Spotify app/.test(spotifySettings), spotifySettings.match(/Plays in[^\n]*\n?[^\n]*/)?.[0]);
+  const widevineHere = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').widevine);
+  check(
+    widevineHere
+      ? 'with Widevine (this test browser has it, like the app), Spotify plays in the app itself, and Settings says it is ready'
+      : 'without Widevine, Spotify falls back to the Spotify app, and Settings explains',
+    widevineHere ? !connect && /This app: Spotify's own web player[^]*Ready\./.test(spotifySettings) : connect && /Widevine module it needs/.test(spotifySettings),
+    spotifySettings.match(/This app:[^.]*\.[^.]*\./)?.[0],
+  );
 
   await context.close();
 

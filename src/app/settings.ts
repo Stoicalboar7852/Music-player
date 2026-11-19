@@ -29,8 +29,12 @@ export interface Settings {
   shuffle: boolean;
   repeat: RepeatMode;
   spotifyClientId: string;
-  /** Where Spotify plays: in this page (the Web Playback SDK) or in the Spotify app (Spotify Connect). */
-  spotifyPlayback: 'page' | 'app';
+  /**
+   * Where Spotify plays: in this page (the Web Playback SDK), in the Spotify
+   * app (Spotify Connect), or (desktop app only, off unless chosen) through
+   * librespot, an unofficial client the app bundles.
+   */
+  spotifyPlayback: 'page' | 'app' | 'librespot';
   appleDeveloperToken: string;
   youtubeApiKey: string;
   /** Google OAuth client ID (web application), for signing in to YouTube. */

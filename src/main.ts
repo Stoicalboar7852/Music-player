@@ -75,7 +75,10 @@ const capture = new CaptureManager(engine);
 player.register(new LocalBackend(engine));
 // Streaming services. Each brings its own official player as a backend; none
 // of them is needed for local files or system audio.
-const services: MusicService[] = [new SpotifyService(), new AppleMusicService(), new YouTubeService()];
+const spotify = new SpotifyService();
+// librespot (desktop app, optional): its audio plays through the engine, like a local file.
+spotify.usePcm(() => engine.createPcmStream());
+const services: MusicService[] = [spotify, new AppleMusicService(), new YouTubeService()];
 for (const service of services) player.register(service.backend);
 
 // ------------------------------------------------------------------- shell
@@ -310,10 +313,12 @@ function syncArtwork(track: Track | null) {
 /** Decides what the visualizers listen to, and whether to ask for tab audio. */
 function route() {
   const track = player.current;
-  const localPlaying = track?.source === 'local' && player.playing;
+  // librespot's audio plays in this page: the visualizers hear it like a local file.
+  const inPage = Boolean(track && app.services.find((s) => s.id === track.source)?.audioInPage);
+  const localPlaying = (track?.source === 'local' || inPage) && player.playing;
   engine.setAnalysisInput(capture.state.active && !localPlaying ? 'capture' : 'local');
 
-  const needsCapture = Boolean(track && track.source !== 'local' && !capture.state.active);
+  const needsCapture = Boolean(track && track.source !== 'local' && !inPage && !capture.state.active);
   banner.hidden = !needsCapture;
   const elsewhere = Boolean(track && app.services.find((s) => s.id === track.source)?.playsOutsidePage);
   shareTab.hidden = elsewhere && !desktop;
@@ -348,6 +353,7 @@ let autoShareTried = false;
 function maybeAutoShare() {
   const track = player.current;
   if (!track || track.source === 'local' || !player.playing || capture.state.active || autoShareTried) return;
+  if (app.services.find((s) => s.id === track.source)?.audioInPage) return;
   if (!settings.get('autoShare') || !capture.supported) return;
   const activation = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (!activation?.isActive) return;
@@ -362,6 +368,8 @@ player.on('track', (track) => {
   syncArtwork(track);
   route();
 });
+// Where Spotify plays can change (Widevine ready, librespot chosen): listen accordingly.
+spotify.onStatus(() => route());
 
 // Installable as an app; the tab icon dances while music plays.
 registerServiceWorker();

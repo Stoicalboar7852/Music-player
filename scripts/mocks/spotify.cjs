@@ -463,6 +463,8 @@ async function installSpotifyMock(context, { clientId = 'mock-client-id' } = {})
       open: () => (sApp.open = true),
       quit: () => Object.assign(sApp, { open: false, track: null, context: null, playing: false }),
       autoplay: (on) => (sApp.autoplay = on),
+      /** Becomes another Connect device (librespot's, in the desktop app's tests). */
+      become: (id, name) => Object.assign(sApp, { id, name }),
       state: () => {
         appTick();
         return { open: sApp.open, track: sApp.track?.uri ?? null, playing: sApp.playing, position: appPosition(), context: sApp.context?.uri ?? null, volume: sApp.volume, commands: [...sApp.commands] };

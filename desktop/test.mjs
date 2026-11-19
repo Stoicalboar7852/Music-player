@@ -1,5 +1,7 @@
 // Tests for the parts of the desktop app that don't need Electron: the local
-// server for the web app, and the menu bar / tray icon renderer.
+// server for the web app, the menu bar / tray icon renderer, and the optional
+// librespot launcher (with a stand-in for librespot, and the real binary's
+// arguments when one has been built into desktop/bin).
 //
 //   node desktop/test.mjs
 //
@@ -11,6 +13,10 @@ import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { inflateSync } from 'node:zlib';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { BYTES_PER_SECOND, createLibrespot, librespotPath } from './librespot.mjs';
 import { startServer } from './server.mjs';
 import { createMeter, drawGlyph, drawIcon, RESTING } from './tray-icon.mjs';
 
@@ -122,6 +128,78 @@ console.log('\n== Desktop app: menu bar and tray icon ==');
   const glyphs = ['play', 'pause', 'next', 'previous'].map((k) => decodePng(drawGlyph(k, 32)));
   const covered = glyphs.map((g) => [...Array(32 * 32).keys()].filter((i) => g.rgba[i * 4 + 3] > 128).length);
   check('the Windows taskbar buttons get play, pause, next and previous glyphs', glyphs.every((g) => g.width === 32) && covered.every((c) => c > 120 && c < 600), covered.join(', '));
+}
+
+// ---------------------------------------------------------------- librespot
+{
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const dir = mkdtempSync(path.join(tmpdir(), 'phosphor-spot-'));
+  const argsFile = path.join(dir, 'args.json');
+  // The stand-in is a Node script: run it through a tiny shell wrapper (or a .cmd on Windows).
+  const fake = path.join(here, 'test-fixtures', 'fake-librespot.mjs');
+  let binary = path.join(dir, process.platform === 'win32' ? 'librespot.cmd' : 'librespot');
+  writeFileSync(binary, process.platform === 'win32' ? `@echo off\r\n"${process.execPath}" "${fake}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+  process.env.FAKE_LIBRESPOT_ARGS = argsFile;
+
+  const run = (token) =>
+    new Promise((resolve) => {
+      const states = [];
+      let bytes = 0;
+      let first = 0;
+      let last = 0;
+      const spot = createLibrespot({
+        binary,
+        cacheDir: path.join(dir, 'cache'),
+        onAudio: (chunk) => {
+          const now = performance.now();
+          first ||= now;
+          last = now;
+          bytes += chunk.length;
+        },
+        onState: (state) => {
+          states.push(state.status);
+          if (['exited', 'stopped', 'failed', 'auth-failed'].includes(state.status) && state.status !== 'auth-failed') resolve({ states, bytes, seconds: (last - first) / 1000 });
+          if (state.status === 'auth-failed') setTimeout(() => resolve({ states, bytes, seconds: 0 }), 300);
+        },
+      });
+      spot.start({ token, name: 'Phosphor (librespot)' });
+    });
+
+  if (process.platform !== 'win32') {
+    const good = await run('a-token');
+    const args = JSON.parse(readFileSync(argsFile, 'utf8'));
+    const has = (flag, value) => args.includes(flag) && (value === undefined || args[args.indexOf(flag) + 1] === value);
+    check(
+      'librespot is started as a Connect device writing raw audio to its output, signed in with the page\'s token',
+      has('--name', 'Phosphor (librespot)') && has('--backend', 'pipe') && has('--format', 'S16') && has('--access-token', 'a-token') && has('--disable-discovery') && has('--volume-ctrl', 'fixed'),
+      args.join(' '),
+    );
+    check('...its sign-in is noticed, and its audio passed on', good.states.includes('ready') && good.bytes === Math.ceil((44100 * 8) / 4096) * 4096 * 4, `${good.states.join(' → ')}, ${good.bytes} bytes`);
+    // Written as fast as possible, read at the speed it plays (half a second ahead at most).
+    check('...read at real time, not as fast as it is written (so Spotify sees songs play at their speed)', good.seconds > 7 && good.seconds < 9, `8 s of audio arrived over ${good.seconds.toFixed(2)} s (${(good.bytes / BYTES_PER_SECOND).toFixed(1)} s of audio)`);
+    const bad = await run('bad');
+    check('a refused sign-in is reported as such', bad.states.includes('auth-failed'), bad.states.join(' → '));
+  } else {
+    check('librespot launcher (skipped on Windows: the stand-in needs a shell)', true);
+  }
+  const missing = createLibrespot({ binary: null, cacheDir: dir, onAudio() {}, onState: (s) => (missing.last = s) });
+  missing.start({ token: 'x' });
+  check('without a bundled librespot the page is told it is missing', missing.last?.status === 'missing' && !missing.available);
+
+  // The real binary, when one has been built (CI builds it into desktop/bin before packaging).
+  const real = librespotPath(null, here);
+  if (real && existsSync(real)) {
+    const version = execFileSync(real, ['--version'], { encoding: 'utf8' }).trim();
+    let log = '';
+    try {
+      execFileSync(real, ['--name', 'Phosphor (librespot)', '--device-type', 'computer', '--backend', 'pipe', '--format', 'S16', '--bitrate', '320', '--initial-volume', '100', '--volume-ctrl', 'fixed', '--autoplay', 'off', '--disable-discovery', '--disable-audio-cache', '--cache', path.join(dir, 'real-cache'), '--access-token', 'not-a-real-token', '--ap-port', '1'], { encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'ignore', 'pipe'] });
+    } catch (error) {
+      log = String(error.stderr ?? '');
+    }
+    check(`the bundled librespot (${version}) accepts every argument the app passes`, /Using StdoutSink \(pipe\) with format: S16/.test(log) && !/Unrecognized|unexpected argument|Invalid/i.test(log), log.trim().split('\n').slice(-1)[0]);
+  } else {
+    console.log('  note  no librespot binary in desktop/bin here: its arguments were not checked against the real thing');
+  }
 }
 
 console.log(`\n${failures ? `${failures} failed` : 'all passed'}`);

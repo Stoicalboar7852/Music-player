@@ -43,6 +43,44 @@ interface DesktopBridge {
   presenterDisplays?(): Promise<{ id: number; label: string; primary: boolean }[]>;
   /** Makes the presenter window fill a display (null: the one it is on). */
   presentOn?(id: number | null): void;
+  /** Whether Widevine is installed (castLabs builds), and a call when it becomes so. */
+  widevine?(): Promise<boolean>;
+  onWidevine?(callback: () => void): () => void;
+  /** Optional Spotify playback through librespot, which the app bundles. */
+  spot?: {
+    available(): Promise<boolean>;
+    start(options: { token: string; name?: string }): void;
+    stop(): void;
+    /** Signed 16-bit stereo PCM at 44.1 kHz, as librespot writes it. */
+    onAudio(callback: (chunk: Uint8Array) => void): () => void;
+    onState(callback: (state: SpotState) => void): () => void;
+  };
+}
+
+export interface SpotState {
+  status: 'missing' | 'starting' | 'ready' | 'auth-failed' | 'unreachable' | 'failed' | 'exited' | 'stopped';
+  available: boolean;
+  log: string;
+  error?: string;
+  code?: number | null;
+}
+
+/**
+ * Whether this browser engine can use Widevine, the DRM module Spotify's web
+ * player needs (Chrome and Edge can; plain Electron and Chromium can't;
+ * castLabs' Electron, which the desktop app is built on, can).
+ */
+export async function widevineAvailable(): Promise<boolean> {
+  if (!navigator.requestMediaKeySystemAccess) return false;
+  try {
+    const access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [
+      { initDataTypes: ['cenc'], audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"', robustness: 'SW_SECURE_CRYPTO' }] },
+    ]);
+    await access.createMediaKeys();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export const desktop: DesktopBridge | null = (window as Window & { phosphorDesktop?: DesktopBridge }).phosphorDesktop ?? null;

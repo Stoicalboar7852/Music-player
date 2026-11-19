@@ -49,8 +49,32 @@ try {
   check('the window opens Phosphor from its local server', /^http:\/\/127\.0\.0\.1:\d+\/$/.test(info.url), info.url);
   check('the page has the desktop bridge', info.platform === process.platform && Boolean(info.desktop), JSON.stringify(info));
   check('the menu bar or tray icon exists', await app.evaluate(() => globalThis.__phosphorDesktop.hasTray));
-  const spotifyApp = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode);
-  check('Spotify is set to play through the Spotify app (no Widevine here)', spotifyApp === true);
+  // Widevine (castLabs' Electron): installed at first launch, then offered to the page.
+  const widevineReady = await app
+    .evaluate(async () => {
+      for (let i = 0; i < 120 && !globalThis.__phosphorDesktop.widevine; i++) await new Promise((r) => setTimeout(r, 250));
+      return globalThis.__phosphorDesktop.widevine;
+    })
+    .catch(() => false);
+  const eme = await page.evaluate(async () => {
+    try {
+      const access = await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [
+        { initDataTypes: ['cenc'], audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"', robustness: 'SW_SECURE_CRYPTO' }] },
+      ]);
+      return { ok: Boolean(await access.createMediaKeys()) };
+    } catch (error) {
+      return { ok: false, error: `${error.name}: ${error.message}` };
+    }
+  });
+  check('Widevine is installed and the page can use it (what Spotify\'s web player needs)', widevineReady && eme.ok, JSON.stringify(eme));
+  const ua = await app.evaluate(() => globalThis.__phosphorDesktop.userAgent);
+  check('the app presents itself as plain Chrome (no Electron in the user agent)', /Chrome\/\d/.test(ua) && !/Electron|Phosphor/i.test(ua), ua);
+  await page.waitForFunction(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode === false, null, { timeout: 10_000 }).catch(() => {});
+  const spotifyInApp = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').connectMode === false);
+  check('Spotify plays in the app itself (its web player), no Spotify app needed', spotifyInApp);
+  const librespot = await app.evaluate(() => globalThis.__phosphorDesktop.librespot);
+  const offered = await page.evaluate(() => window.__phosphor.app.services.find((s) => s.id === 'spotify').librespotAvailable);
+  check('librespot is bundled and offered as an option (off unless chosen)', librespot.available && offered && !librespot.running, JSON.stringify(librespot));
 
   // The demo is synthesised in the page, so it needs no files and no network.
   await page.click('.welcome >> text=Play demo');

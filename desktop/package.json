@@ -1,7 +1,7 @@
 {
   "name": "phosphor-desktop",
   "productName": "Phosphor",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Phosphor, a music player built around its visualizers, as a desktop app.",
   "author": "Phosphor contributors",
   "license": "UNLICENSED",
@@ -14,7 +14,7 @@
     "smoke": "node smoke-test.mjs"
   },
   "devDependencies": {
-    "electron": "45.3.4",
+    "electron": "github:castlabs/electron-releases#v45.2.1+wvcus",
     "electron-builder": "26.18.0",
     "playwright": "1.63.0"
   },
@@ -30,6 +30,7 @@
       "main.mjs",
       "server.mjs",
       "tray-icon.mjs",
+      "librespot.mjs",
       "preload.cjs",
       "mini-preload.cjs",
       "mini/**",
@@ -40,7 +41,15 @@
     "mac": {
       "category": "public.app-category.music",
       "icon": "build/icon-mac.png",
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
       "identity": "-",
       "hardenedRuntime": false,
       "extendInfo": {
@@ -53,7 +62,14 @@
     },
     "win": {
       "icon": "build/icon.png",
-      "target": [{ "target": "nsis", "arch": ["x64"] }]
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -63,7 +79,26 @@
     "linux": {
       "icon": "build/icon.png",
       "category": "AudioVideo",
-      "target": ["AppImage"]
-    }
+      "target": [
+        "AppImage"
+      ]
+    },
+    "electronDownload": {
+      "mirror": "https://github.com/castlabs/electron-releases/releases/download/v"
+    },
+    "afterPack": "build/vmp-after-pack.cjs",
+    "afterSign": "build/vmp-after-sign.cjs",
+    "extraResources": [
+      {
+        "from": "bin/${os}-${arch}",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
+  },
+  "dependencies": {
+    "koffi": "3.3.8"
   }
 }

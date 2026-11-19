@@ -49,6 +49,9 @@ jobs:
             app: release/win-unpacked/Phosphor.exe
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      # Optional (see below): an EVS account for production Widevine VMP signing.
+      EVS_ACCOUNT_NAME: ${{ secrets.EVS_ACCOUNT_NAME }}
     steps:
       - uses: actions/checkout@v5
 
@@ -69,14 +72,58 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      # librespot, for the optional (off by default) Spotify playback through
+      # it: built from source for each architecture the installers cover,
+      # with rustls (no OpenSSL) and only its pipe output.
+      - name: Cache librespot's build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ runner.temp }}/librespot/target
+          key: librespot-0.8.0-${{ runner.os }}-v1
+
+      - name: Build librespot
+        shell: bash
+        run: |
+          if [ ! -d "$RUNNER_TEMP/librespot/.git" ]; then
+            rm -rf "$RUNNER_TEMP/librespot"
+            git clone --depth 1 --branch v0.8.0 https://github.com/librespot-org/librespot "$RUNNER_TEMP/librespot"
+          fi
+          cd "$RUNNER_TEMP/librespot"
+          build() {
+            cargo build --release --locked --no-default-features --features rustls-tls-webpki-roots --target "$1"
+            mkdir -p "$GITHUB_WORKSPACE/desktop/bin/$2"
+            cp "target/$1/release/librespot$3" "$GITHUB_WORKSPACE/desktop/bin/$2/"
+            cp LICENSE "$GITHUB_WORKSPACE/desktop/bin/$2/librespot-LICENSE.txt"
+          }
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            build aarch64-apple-darwin mac-arm64 ""
+            build x86_64-apple-darwin mac-x64 ""
+          else
+            rustup target add x86_64-pc-windows-msvc
+            build x86_64-pc-windows-msvc win-x64 .exe
+          fi
+          ls -R "$GITHUB_WORKSPACE/desktop/bin"
+
       - name: Test the local server and the icons
         working-directory: desktop
         run: npm test
+
+      # Production Widevine VMP signing (castLabs EVS), when the repository has
+      # an EVS account in its secrets; otherwise builds keep castLabs'
+      # development signature. See the README, Desktop app.
+      - name: Install castLabs EVS (VMP signing)
+        if: env.EVS_ACCOUNT_NAME != ''
+        run: python3 -m pip install --upgrade castlabs-evs
 
       - name: Build the installers
         working-directory: desktop
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          EVS_PASSWD: ${{ secrets.EVS_PASSWD }}
         run: npx electron-builder ${{ matrix.builder }} --publish never
 
       - name: Smoke-test the packaged app

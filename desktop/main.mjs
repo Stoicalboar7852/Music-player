@@ -8,14 +8,19 @@
 //  - a live visualizer in the macOS menu bar or the Windows tray, with a mini
 //    player under it and Play/Pause, Next and Previous,
 //  - its own name and icon in Now Playing, the media keys and the Dock or
-//    taskbar, plus Previous/Play/Next buttons on the Windows taskbar preview.
+//    taskbar, plus Previous/Play/Next buttons on the Windows taskbar preview,
+//  - Widevine, so Spotify's own web player plays inside the app: this is
+//    castLabs' Electron for Content Security, which installs Google's
+//    Widevine module at first launch (see the README, Desktop app),
+//  - a presenter window placed full screen on another display.
 //
 // The page reports what is playing and the music's levels through the bridge
 // in preload.cjs; the tray and the mini player send their commands back.
 
-import { app, BrowserWindow, desktopCapturer, ipcMain, Menu, nativeImage, nativeTheme, screen, session, shell, Tray } from 'electron';
+import electron, { app, BrowserWindow, desktopCapturer, ipcMain, Menu, nativeImage, nativeTheme, screen, session, shell, Tray } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createLibrespot, librespotPath } from './librespot.mjs';
 import { startServer } from './server.mjs';
 import { createMeter, drawGlyph, drawIcon, RESTING } from './tray-icon.mjs';
 
@@ -24,8 +29,10 @@ const isMac = process.platform === 'darwin';
 const isWindows = process.platform === 'win32';
 
 app.setName('Phosphor');
-// macOS: let Chromium hand system audio to a screen capture (ScreenCaptureKit
-// or Core Audio taps, depending on the macOS version). Unknown flags are ignored.
+// macOS: from Electron 39 Chromium captures system audio with Apple's
+// CoreAudio Tap API by default (macOS 14.2+, with NSAudioCaptureUsageDescription,
+// see package.json). These older feature flags only matter to older macOS
+// paths; unknown or retired flags are ignored.
 if (isMac) app.commandLine.appendSwitch('enable-features', 'MacLoopbackAudioForScreenShare,MacSckSystemAudioLoopbackOverride,MacCatapLoopbackAudioForScreenShare');
 // The analysis keeps running while the window is hidden: the menu bar or tray
 // visualizer and the mini player follow the music.
@@ -49,6 +56,11 @@ let quitting = false;
 let state = { title: '', artist: '', artwork: '', source: '', playing: false, listening: false };
 let levels = null;
 let levelsAt = 0;
+/** Widevine is installed and ready (castLabs builds only). */
+let widevine = false;
+/** Optional Spotify playback through librespot (off unless the user turns it on). */
+/** @type {ReturnType<typeof createLibrespot> | null} */
+let spot = null;
 let trayFrames = 0;
 const meter = createMeter();
 
@@ -179,10 +191,33 @@ function presentOn(id) {
   } else fill();
 }
 
+// ------------------------------------------------------------ widevine
+
+/**
+ * castLabs builds install (or update) Google's Widevine module in the
+ * background at startup; until it is ready, Spotify's web player can't play.
+ * The page checks for itself (navigator.requestMediaKeySystemAccess), and is
+ * told when it becomes ready so it can check again.
+ */
+function prepareWidevine() {
+  const components = electron.components;
+  if (!components) return;
+  components.whenReady().then(
+    () => {
+      widevine = true;
+      win?.webContents.send('phosphor:widevine', true);
+    },
+    (error) => console.warn('Widevine could not be installed:', error),
+  );
+}
+
 // -------------------------------------------------------- audio and access
 
 function setUpSession() {
   const ses = session.defaultSession;
+  // Look like the Chrome the app is built on: Spotify's web player (and other
+  // services) may refuse browsers they don't recognise.
+  ses.setUserAgent(ses.getUserAgent().replace(/ Electron\/\S+/, '').replace(/ phosphor-desktop\/\S+| Phosphor\/\S+/i, ''));
   const ours = (url) => {
     try {
       return new URL(url).origin === server.origin;
@@ -394,6 +429,18 @@ function setUpMessages() {
     if (mini?.isVisible()) mini.webContents.send('mini:levels', next);
   });
 
+  ipcMain.handle('phosphor:widevine', (event) => fromPhosphor(event) && widevine);
+
+  // librespot (optional): start it with the page's Spotify token, stop it, say whether it's bundled.
+  ipcMain.handle('phosphor:spot-available', (event) => fromPhosphor(event) && Boolean(spot?.available));
+  ipcMain.on('phosphor:spot-start', (event, options) => {
+    if (!fromPhosphor(event) || !options || typeof options !== 'object') return;
+    spot?.start({ token: text(options.token, 4000), name: text(options.name, 60) || 'Phosphor' });
+  });
+  ipcMain.on('phosphor:spot-stop', (event) => {
+    if (fromPhosphor(event)) spot?.stop();
+  });
+
   ipcMain.on('phosphor:open-spotify', (event) => {
     if (fromPhosphor(event)) void shell.openExternal('spotify:').catch(() => {});
   });
@@ -464,6 +511,15 @@ globalThis.__phosphorDesktop = {
   get miniVisible() {
     return Boolean(mini?.isVisible());
   },
+  get widevine() {
+    return widevine;
+  },
+  get librespot() {
+    return { available: Boolean(spot?.available), running: Boolean(spot?.running) };
+  },
+  get userAgent() {
+    return session.defaultSession.getUserAgent();
+  },
   get presenter() {
     return presenter && !presenter.isDestroyed() ? { bounds: presenter.getBounds(), fullScreen: presenter.isFullScreen(), url: presenter.webContents.getURL() } : null;
   },
@@ -486,6 +542,13 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     nativeTheme.themeSource = 'dark';
     server = await startServer(path.join(here, 'web'));
+    prepareWidevine();
+    spot = createLibrespot({
+      binary: librespotPath(app.isPackaged ? process.resourcesPath : null, here),
+      cacheDir: path.join(app.getPath('userData'), 'librespot'),
+      onAudio: (chunk) => win?.webContents.send('phosphor:spot-audio', chunk),
+      onState: (state) => win?.webContents.send('phosphor:spot-state', state),
+    });
     setUpSession();
     setUpMessages();
     buildMenu();
@@ -494,6 +557,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('will-quit', () => {
+    spot?.stop();
     void server?.close();
   });
 }

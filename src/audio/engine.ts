@@ -13,6 +13,7 @@
 // It is never routed to the speakers, otherwise you would hear it twice.
 
 import { FFT_SIZE } from './analysis';
+import { PcmStream } from './pcmStream';
 
 export type AnalysisInput = 'local' | 'capture';
 
@@ -251,6 +252,18 @@ export class AudioEngine {
     const now = this.context.currentTime;
     this.localTap.gain.setTargetAtTime(input === 'local' ? 1 : 0, now, 0.03);
     this.captureTap.gain.setTargetAtTime(input === 'capture' ? 1 : 0, now, 0.03);
+  }
+
+  /**
+   * A stream of raw PCM from outside the page (librespot in the desktop app),
+   * seen by the analysis like a deck and heard at its own volume.
+   */
+  createPcmStream(): PcmStream {
+    const stream = new PcmStream(this.context);
+    stream.output.connect(this.localTap);
+    // Its own volume, so a crossfade with a local file (whose volume is the engine's) works.
+    stream.speaker.connect(this.context.destination);
+    return stream;
   }
 
   /** Routes a captured stream into the analysers only. */

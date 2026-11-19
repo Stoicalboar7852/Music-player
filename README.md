@@ -1,11 +1,11 @@
 # Phosphor
 
-A music player for the browser whose main attraction is its visualizers. Put music on, press <kbd>F</kbd>, and the interface fades away to leave twenty-five audio-reactive visualizers filling the screen.
+A music player for the browser whose main attraction is its visualizers. Put music on, press <kbd>F</kbd>, and the interface fades away to leave forty-three audio-reactive visualizers filling the screen.
 
 ![Album Halo, with colours taken from the cover art](docs/screenshots/radial.png)
 
 - **Sources:** local files (MP3, FLAC, WAV, M4A/AAC, OGG/Opus and anything else Chrome or Edge decodes), whatever your computer is playing (system or tab audio capture), Spotify, Apple Music, and YouTube / YouTube Music.
-- **Visualizers:** twenty-five in five categories: classic (spectrum bars, oscilloscope, feedback trails, kaleidoscope, real MilkDrop presets, a spectrogram, ridgelines), modern (GPU particles, a radial spectrum around the album art, a laser show, a mandala), 3D (raymarched orb, lattice and crystal cave, a frequency terrain, a ringed planet, light ribbons), retro and arcade (a demoscene tunnel, a pixel-art night drive, a self-playing pixel shooter, vector-monitor wireframes) and simulations (fluid, reaction-diffusion, a cellular automaton, a slime mould). Kicks, the bassline, vocals, hi-hats and drops each drive something different in every one of them.
+- **Visualizers:** forty-three in six categories: classic (spectrum bars, oscilloscope, feedback trails, kaleidoscope, real MilkDrop presets, a spectrogram, ridgelines, an XY vector scope), modern (GPU particles, a radial spectrum around the album art, a laser show, a mandala, an aurora, a spiral galaxy, a turntable, a rainy window), 3D (raymarched orb, lattice and crystal cave, a frequency terrain, a ringed planet, light ribbons, ferrofluid, a black hole), retro and arcade (a demoscene tunnel, a pixel-art night drive, a self-playing pixel shooter, vector-monitor wireframes, a lava lamp, a circuit board), simulations (fluid, reaction-diffusion, a cellular automaton, a slime mould, fireworks, a ripple pool, a flock of starlings) and games (original scenes in the spirit of game genres: a lantern-lit cave kingdom, a voxel valley, a painterly meadow, bullet dodging, a rhythm runner, car-ball). Kicks, the bassline, vocals, hi-hats and drops each drive something different in every one of them.
 - **Player:** queue, shuffle, repeat, seek, volume, keyboard shortcuts, media keys, drag and drop, folders, tags and cover art, crossfades between songs (and beat-matched DJ mixes between local files), a visualizer gallery, auto-cycling visualizers.
 - **Stack:** Vite + TypeScript, raw WebGL2, Web Audio. No backend and no framework. Runs in Chrome or Edge.
 
@@ -13,6 +13,9 @@ A music player for the browser whose main attraction is its visualizers. Put mus
 
 This is the `v3` branch. The `v1` and `v2` branches keep the earlier versions unchanged. What's new so far:
 
+- **Eighteen new visualizers, and a Games category.** Lantern Depths, Block Valley, Pastel Horizon, Bullet Box, Pulse Runner and Boost Arena (games: original scenes in the spirit of game genres, not copies of any game), XY Scope, Aurora, Spiral Galaxy, Turntable, Rainy Window, Ferrofluid, Event Horizon, Lava Lamp, Circuit Board, Fireworks, Ripple Pool and Murmuration. Each reacts to bass, mids, treble and beats separately, measured like the others. See [Visualizers](#visualizers).
+- **Spotify inside the desktop app, without the Spotify app.** The desktop app is now built on castLabs' Electron, which has Widevine, so Spotify's own web player plays inside it. Optionally (off by default, with a warning, since Spotify's terms don't allow it) it can play Spotify through the bundled librespot instead, whose sound the visualizers hear directly. See [Spotify](#spotify) and [Desktop app](#desktop-app).
+- **The desktop app stays on Electron.** I checked whether Tauri (Rust with the system's webview) would let it do more: on macOS it can't play Spotify's web player (no Widevine in Safari's engine) and can't hand rendered frames to video software, so it would do less. The decision and the spike that tested Widevine: [docs/desktop-platform.md](docs/desktop-platform.md).
 - **A presenter window for an audience screen.** **Present** (the screen button in the top bar, or <kbd>D</kbd>) opens a second window with nothing but the visuals, for a projector, a TV or a stage screen, while the main window stays your controller. It runs in step with the main window and keeps going when that window is hidden. Overlays switch on from the main window only: a QR code for the song (its Spotify, Apple Music or YouTube page), the title and artist, a logo, blackout and freeze. See [Presenter window](#presenter-window).
 
 ## Version 2
@@ -155,8 +158,26 @@ Streaming songs can't be mixed this way. The services' web players don't give a 
 | | **Reaction-Diffusion** (simulation) – two chemicals growing coral, cells, worms or mazes | reaction rate | reaction rate, tint | edges glint | new seeds grow; drops change the kind of growth |
 | | **Life** (simulation) – a cellular automaton stepping four generations a beat | trail glow | tint | sparkles | kicks plant patterns, snares launch gliders; drops change the rules |
 | | **Slime Mold** (simulation) – 65,000 agents weaving trail networks like a slime mould | how strongly paths are marked | how widely they look; tint | glitter on busy paths | scattered outward; drops start a new colony |
+| | **XY Scope** (classic, v3) – a vector display: the left channel drives the beam across, the right one up | the figure turns | every tone draws its own figure | a fizzing cloud | the beam fattens and the figure swells; a ring crosses the graticule |
+| | **Aurora** (modern, v3) – northern lights over mountains and a lake; the curtains are the spectrum | the curtains ripple | deeper colour | stars twinkle | the lower edges flare; a bright seam on the beat; drops rearrange the sky |
+| | **Spiral Galaxy** (modern, v3) – a turning galaxy whose radius is the spectrum, bass at the core | it spins faster | nebulae fill in | stars twinkle | the core flares and lurches forward; a shock ring on the beat; drops turn the view |
+| | **Turntable** (modern, v3) – the song's record spinning, its cover as the label | the needle trembles | warmer light | dust glints | strobe dots flash; light catches the grooves where the music is |
+| | **Rainy Window** (modern, v3) – city lights out of focus through a rainy pane, each light a band | drops run faster | warmer lights | glints on the drops | the lights swell; lightning on drops |
+| | **Ferrofluid** (3D, v3) – a glossy drop of magnetic fluid with a spike for each band | it breathes and turns | studio light tint | glints along the edges | every spike surges; a light sweeps across on the beat; drops turn it |
+| | **Event Horizon** (3D, v3) – a black hole bending its accretion disk's light; the disk is the spectrum | the disk churns | disk colour | stars twinkle, hot spots glint | the disk flares; the photon ring lights on the beat; drops swing the camera |
+| | **Lava Lamp** (retro, v3) – wax blobs in a glowing lamp, each blob a band | the wax climbs faster | wax colour | bubbles rise | the lamp heats up, every blob swells, the glass flashes; drops stir the wax |
+| | **Circuit Board** (retro, v3) – signals racing along a circuit board, each row of traces a band | signal speed | signals up the vertical traces | vias spark | power surges, the chips light up, a wave ripples out on the beat; drops reroute the board |
+| | **Fireworks** (simulation, v3) – fireworks over a city on the water, in the song's colours | shells fly harder, the water ripples | a golden fountain | embers crackle and glint | kicks launch shells, snares low bursts; a finale on drops |
+| | **Ripple Pool** (simulation, v3) – a tiled pool (with the cover on its floor) whose surface is a wave simulation | waves carry further | a finger drawn through the water | spatters of drops, shimmer | kicks drop stones, snares smaller ones; drops retile the pool |
+| | **Murmuration** (simulation, v3) – a flock of starlings over a sunset, each bird following flocking rules | the flock draws tight | a warmer sky | light catches on wings | the flock turns on every beat and startles on kicks; drops split it in two |
+| | **Lantern Depths** (games, v3) – an underground kingdom in drifting silhouettes, lanterns on chains | lanterns swing, the mist stirs | shafts of light open | fireflies blink | lanterns flare and shake dust loose; crystals glow with their bands; drops move to a new chamber |
+| | **Block Valley** (games, v3) – a flight down a river valley of blocks; the hills are an equalizer, bass on the left | the flight's bob and pace | the sky warms toward sunset | glints on the water, stars at night | kicks pop columns up a block, block edges light on the beat; drops turn day to night |
+| | **Pastel Horizon** (games, v3) – a painterly meadow under a ringed planet, machines walking far off | wind through the grass | the sky warms, the planet's rim lights | pollen glints | the machines' footfalls land on kicks, their lamps flash on the beat; the grass is an equalizer; drops sweep light across |
+| | **Bullet Box** (games, v3) – a spark dodging patterns fired into a neon box, in chunky pixels | the box breathes | a spiral keeps turning | pellet rain | kicks fire rings, snares drop walls with a gap; a new phase on drops |
+| | **Pulse Runner** (games, v3) – a glowing square on a neon course laid out by the beats | the floor rolls | colours shift | glitter in the trail | every beat sets an obstacle two beats ahead, so each jump peaks on a beat; kicks pump the shapes; drops flip gravity |
+| | **Boost Arena** (games, v3) – rocket cars knocking a giant ball around an arena; the back wall is the spectrum | boosters fire | the crowd's lights | floodlights glint | kicks launch the cars at the ball, the LEDs chase on the beat; goals explode; drops send the ball at a goal |
 
-The gallery (<kbd>G</kbd>) filters by category: Classic, Modern, 3D, Retro & arcade, Simulations. Most visualizers take their colours from the current track's artwork; the interface accent colour follows it too. With no artwork, Album Halo shows a spinning record instead. Number keys reach the first ten; the arrow keys, the gallery and auto-cycle reach them all.
+The gallery (<kbd>G</kbd>) filters by category: Classic, Modern, 3D, Retro & arcade, Simulations, Games. The Games are original scenes in the spirit of game genres (a cave-exploring kingdom, a voxel world, a painterly adventure, bullet dodging, a rhythm runner, car-ball); none uses a real game's name, characters, art, music or levels. Most visualizers take their colours from the current track's artwork; the interface accent colour follows it too. With no artwork, Album Halo shows a spinning record instead. Number keys reach the first ten; the arrow keys, the gallery and auto-cycle reach them all.
 
 <table>
 <tr><td><img src="docs/screenshots/bars.png" alt="Spectrum"></td><td><img src="docs/screenshots/scope.png" alt="Oscilloscope"></td><td><img src="docs/screenshots/trails.png" alt="Feedback Trails"></td></tr>
@@ -167,7 +188,13 @@ The gallery (<kbd>G</kbd>) filters by category: Classic, Modern, 3D, Retro & arc
 <tr><td><img src="docs/screenshots/petals.png" alt="Petals"></td><td><img src="docs/screenshots/planet.png" alt="Ringed Planet"></td><td><img src="docs/screenshots/cavern.png" alt="Crystal Cavern"></td></tr>
 <tr><td><img src="docs/screenshots/ribbons.png" alt="Ribbons"></td><td><img src="docs/screenshots/racer.png" alt="Neon Racer"></td><td><img src="docs/screenshots/starfighter.png" alt="Starfighter"></td></tr>
 <tr><td><img src="docs/screenshots/vectors.png" alt="Vector Arcade"></td><td><img src="docs/screenshots/reaction.png" alt="Reaction-Diffusion"></td><td><img src="docs/screenshots/life.png" alt="Life"></td></tr>
-<tr><td><img src="docs/screenshots/slime.png" alt="Slime Mold"></td><td></td><td></td></tr>
+<tr><td><img src="docs/screenshots/slime.png" alt="Slime Mold"></td><td><img src="docs/screenshots/xyscope.png" alt="XY Scope"></td><td><img src="docs/screenshots/aurora.png" alt="Aurora"></td></tr>
+<tr><td><img src="docs/screenshots/galaxy.png" alt="Spiral Galaxy"></td><td><img src="docs/screenshots/vinyl.png" alt="Turntable"></td><td><img src="docs/screenshots/rain.png" alt="Rainy Window"></td></tr>
+<tr><td><img src="docs/screenshots/ferro.png" alt="Ferrofluid"></td><td><img src="docs/screenshots/blackhole.png" alt="Event Horizon"></td><td><img src="docs/screenshots/lavalamp.png" alt="Lava Lamp"></td></tr>
+<tr><td><img src="docs/screenshots/circuit.png" alt="Circuit Board"></td><td><img src="docs/screenshots/fireworks.png" alt="Fireworks"></td><td><img src="docs/screenshots/ripples.png" alt="Ripple Pool"></td></tr>
+<tr><td><img src="docs/screenshots/flock.png" alt="Murmuration"></td><td><img src="docs/screenshots/lanterns.png" alt="Lantern Depths"></td><td><img src="docs/screenshots/blocks.png" alt="Block Valley"></td></tr>
+<tr><td><img src="docs/screenshots/meadow.png" alt="Pastel Horizon"></td><td><img src="docs/screenshots/bullets.png" alt="Bullet Box"></td><td><img src="docs/screenshots/runner.png" alt="Pulse Runner"></td></tr>
+<tr><td><img src="docs/screenshots/arena.png" alt="Boost Arena"></td><td></td><td></td></tr>
 </table>
 
 ### Adding a visualizer
@@ -297,7 +324,7 @@ While music plays, the browser tab's icon becomes a tiny live visualizer (four b
 <img src="docs/screenshots/desktop-mini.png" alt="The mini player under the menu bar or tray icon" width="320" align="right">
 
 - **A live visualizer in the macOS menu bar or the Windows tray.** Phosphor's four bars move with the bass, the mids and the treble while music plays, and rest as the logo otherwise. Click it for the **mini player**: artwork, the song, a live spectrum, Previous, Play/Pause, Next and Open Phosphor (keys: Space, ←, →, Esc). Right-click for a menu.
-- **The whole computer's sound, without the share dialog.** **System audio** (and the banner on a streaming song) listens straight away. On Windows this is the system's loopback. On macOS, Electron documents system audio as Windows-only; Phosphor also turns on Chromium's macOS system-audio features, which may work on macOS 14.2 and later, but I couldn't test that without a Mac. If no sound arrives, Phosphor says so: use **Audio input device** with a loopback driver such as BlackHole, or tab sharing in the browser. The first capture on a Mac asks for **Screen & System Audio Recording** permission; only the sound is used.
+- **The whole computer's sound, without the share dialog.** **System audio** (and the banner on a streaming song) listens straight away. On Windows this is the system's loopback. On macOS 14.2 and later it's Apple's CoreAudio Tap API, which Chromium uses for this by default from Electron 39 on ([Electron docs](https://www.electronjs.org/docs/latest/api/desktop-capturer)); the first time, macOS asks to allow **System Audio Recording**. I couldn't try it on a Mac myself (CI machines can't answer that permission prompt). If no sound arrives, Phosphor says so: use **Audio input device** with a loopback driver such as BlackHole, or tab sharing in the browser. The first capture on a Mac asks for **Screen & System Audio Recording** permission; only the sound is used.
 - **Its own name and icon** in Now Playing, the media keys, the Dock and the taskbar; Previous, Play/Pause and Next buttons in the Windows taskbar preview.
 - **Closing the window keeps the music playing.** The menu bar or tray icon, the Dock or the taskbar bring it back; quit from the menu or the icon's menu.
 - **The presenter window goes straight to the other display.** With a second display connected, **Present** opens the [presenter window](#presenter-window) full screen on it, no permission needed; **Fill a screen** lists the displays by name and moves it to the one you pick.
@@ -312,6 +339,30 @@ The installers aren't signed with a paid certificate, so the first launch needs 
 - **Windows**: on the blue "Windows protected your PC" screen, click **More info**, then **Run anyway**.
 
 Signing them properly needs an Apple Developer ID (for notarization) and a Windows code-signing certificate; electron-builder picks those up from the workflow's secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID` and so on) once they exist.
+
+**Widevine and VMP signing.** The app is built on [castLabs' Electron for Content Security](https://github.com/castlabs/electron-releases), which is Electron plus Google's Widevine module, so streaming services' web players can play inside it. Their builds carry a development *VMP* signature; a streaming service can insist on a production one before it hands out a licence (Spotify has done so for other castLabs users). castLabs signs for free through its EVS service, which needs an account:
+
+```bash
+python3 -m pip install --upgrade castlabs-evs
+```
+
+```bash
+python3 -m castlabs_evs.account signup
+```
+
+Then add the account's name and password to the repository's Actions secrets as `EVS_ACCOUNT_NAME` and `EVS_PASSWD`. The workflow then VMP-signs each build (before code signing on macOS, after it on Windows, as EVS requires; `desktop/build/vmp*.cjs`). Without them, the build log says it kept the development signature. Why Electron (and not Tauri), with the spike that checked Widevine: [docs/desktop-platform.md](docs/desktop-platform.md).
+
+**librespot in the app.** The workflow builds librespot 0.8.0 from source for each installer (Apple silicon, Intel, Windows) and puts it inside the app; its licence (MIT) goes alongside it. To build it yourself for `npm run desktop`, with [Rust](https://rustup.rs) installed:
+
+```bash
+git clone --depth 1 --branch v0.8.0 https://github.com/librespot-org/librespot
+```
+
+```bash
+cargo build --release --manifest-path librespot/Cargo.toml --no-default-features --features rustls-tls-webpki-roots
+```
+
+then copy `librespot/target/release/librespot` into `desktop/bin/mac-arm64/` (or `mac-x64`, `win-x64`, `linux-x64`).
 
 **Running or building it yourself:**
 
@@ -332,8 +383,8 @@ npm run desktop
 **Streaming services in the desktop app.** The app serves Phosphor at **http://127.0.0.1:5173/**, the development server's address, so the Spotify redirect URI and Google origin you registered for the browser work unchanged. (If something else has that port, such as `npm run dev`, it uses http://127.0.0.1:5199/; close the other one first, or register that address too.) Its settings are separate from the browser's, so enter your client IDs once more.
 
 - **YouTube** plays as in the browser.
-- **Spotify** plays in the Spotify app, which Phosphor controls (see [Spotify](#spotify), *Playing in the Spotify app instead*): Spotify's web player needs Widevine, the DRM module Chrome includes and plain Electron doesn't (only a separately licensed Electron build has it, through a signing service). Keep the Spotify app open; Phosphor starts it if it isn't running. The visualizers hear it through system audio.
-- **Apple Music**'s web player needs Widevine too, so it doesn't play inside the desktop app. Use it in the browser, or play it in the Music app and turn on **System audio**.
+- **Spotify** plays inside the app (its web player, with Widevine), or in the Spotify app, or through librespot: see [Spotify](#spotify). With the web player or the Spotify app, the visualizers hear it through system audio; with librespot, directly.
+- **Apple Music**'s web player also uses Widevine in Chromium, so with Widevine in the app it should play inside it too. I couldn't try that (it needs an Apple developer token); if it doesn't, use the browser, or the Music app with **System audio**.
 
 **How it was tested.** For version 2 I couldn't run Electron in my build environment (its download was blocked there); for version 3 I could. The smoke test below also runs against the unpacked app on Linux (`node smoke-test.mjs node_modules/electron/dist/electron .` in `desktop/`, after `npm run desktop:web`), with software rendering: every check passed there, including the presenter window (0 ms behind the main window, filling the screen, closing) and system audio captured without a dialog. Also tested: the local server and the icon drawing (`node desktop/test.mjs`), and the page side of the app in Chromium with the app's bridge stood in for (the levels and song it reports, the commands it takes, the analysis carrying on when the window is hidden, the desktop wording) plus the mini player page (`verify.cjs`, part `desktop`). The packaged app itself is smoke-tested on macOS and Windows by the workflow (`desktop/smoke-test.mjs`): the window, the local server, the bridge, the demo, the menu bar or tray icon animating, Play/Pause from it, the mini player, and the presenter window. Whether system audio arrives is reported there but not required, since a CI machine may have no sound device and, on macOS, no screen-recording permission. On Windows everything passed, system audio included (the capture came with its audio track, without a dialog). On macOS everything passed except that system audio couldn't be tried: the capture waits for macOS's permission prompt, which a CI machine can't answer.
 
@@ -372,12 +423,16 @@ Then the Spotify tab opens on your Spotify home: **recently played**, **jump bac
 
 **Spotify-made playlists** (Discover Weekly, Daily Mixes, Release Radar, editorial playlists like Today's Top Hits): since November 2024 Spotify doesn't let apps like this one list their songs, and it no longer offers recommendations, new releases or charts to them either. It does still play them. Paste a link to one (Share → Copy link in Spotify) and Phosphor has Spotify play it as a whole: each song shows in the player as it comes up, Next and Previous move through it, and when it ends Phosphor carries on with its own queue. It's kept on your Spotify home for next time, can go in Phosphor playlists, and appears under *jump back in* when you've been playing it.
 
-**Playing in the Spotify app instead (Spotify Connect).** **Settings → Spotify → Plays in → The Spotify app** has Phosphor play your songs in the Spotify app (on this computer, your phone or a speaker signed in to your account) and control it through the Web API, instead of Spotify's web player in the page. The desktop app always works this way, because its Electron has no Widevine for the web player (see [Desktop app](#desktop-app)). It's also useful wherever the web player won't run. Everything else stays the same: the queue, Phosphor playlists, lists Spotify plays as a whole, Next and Previous, the end of a song moving the queue on, and Spotify's autoplay being stopped in favour of Phosphor's next song.
+**In the desktop app.** Spotify's own web player plays inside the app, with no Spotify app needed: version 3 of the desktop app is built on castLabs' Electron, which includes Widevine, the DRM module the web player needs (see [Desktop app](#desktop-app)). The module downloads from Google the first time the app starts; until it's ready, Spotify plays in the Spotify app instead. **Settings → Spotify → Plays in** chooses between **This app**, **The Spotify app** and, optionally, **librespot** (below).
+
+**Playing in the Spotify app instead (Spotify Connect).** **Settings → Spotify → Plays in → The Spotify app** has Phosphor play your songs in the Spotify app (on this computer, your phone or a speaker signed in to your account) and control it through the Web API, instead of Spotify's web player in the page. It's useful wherever the web player won't run. Everything else stays the same: the queue, Phosphor playlists, lists Spotify plays as a whole, Next and Previous, the end of a song moving the queue on, and Spotify's autoplay being stopped in favour of Phosphor's next song.
 
 - Keep the Spotify app open (the desktop app starts it if it can). With it closed, Phosphor says so.
 - The visualizers need the Spotify app's sound, which sharing a browser tab can't capture. Share your entire screen with system audio (Windows, ChromeOS, macOS 14.2 or later), use an audio input, or, on a phone, the microphone. The desktop app listens to the computer by itself.
 - Phosphor follows the Spotify app by asking for its state about once a second, so a song ending shows up a moment late, and fading into or out of a Spotify song moves in coarse steps.
 - Phosphor's volume sets the Spotify app's volume.
+
+**librespot (desktop app, optional, off unless you choose it).** [librespot](https://github.com/librespot-org/librespot) is an open-source Spotify client. The desktop app includes it, and **Settings → Spotify → Plays in → librespot** has Phosphor start it, signed in with your Spotify connection, as a Spotify Connect device named "Phosphor (librespot)". Phosphor plays your songs on that device and plays its sound itself, so the visualizers hear Spotify directly, like a local file: no capturing the computer's sound, on any system. **Spotify's terms of use don't allow unofficial clients like this, and Spotify could restrict or close an account that uses one**, which is why it's off by default and comes with that warning in Settings. It needs Spotify Premium. librespot runs only while this option is chosen.
 
 Limits:
 

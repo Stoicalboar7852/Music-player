@@ -12,11 +12,29 @@
 //    development-mode apps are capped at 10 search results per type
 
 import { debug } from '../app/debug';
-import { desktop } from '../app/desktop';
+import { desktop, widevineAvailable, type SpotState } from '../app/desktop';
 import { Emitter } from '../app/emitter';
 import { appBaseUrl, settings } from '../app/settings';
+import type { PcmStream } from '../audio/pcmStream';
 import { newTrackId, type Backend, type BackendEvents, type Collection, type Track } from '../player/types';
 import type { MusicService, SearchResults, ServiceStatus, Shelf } from './types';
+
+/** The name librespot's Spotify Connect device goes by. */
+export const LIBRESPOT_NAME = 'Phosphor (librespot)';
+
+/** What to tell the person when librespot didn't come up. */
+function librespotProblem(state: SpotState | null): string {
+  switch (state?.status) {
+    case 'missing':
+      return "This build of the desktop app doesn't include librespot. Choose another option under Settings → Spotify → Plays in.";
+    case 'auth-failed':
+      return 'librespot could not sign in to Spotify with your account (it needs Spotify Premium). Sign out of Spotify in Phosphor and connect again.';
+    case 'unreachable':
+      return "librespot could not reach Spotify's servers. Check your connection (a firewall or proxy may block it).";
+    default:
+      return `librespot did not start${state?.log ? `: ${state.log.trim().split('\n').pop()}` : '.'}`;
+  }
+}
 
 /** The open.spotify.com page for a Spotify URI (spotify:track:…, :album:, :playlist:), or null. */
 export function spotifyWebLink(uri: string | undefined | null): string | null {
@@ -320,11 +338,15 @@ export class ConnectPlayer implements SdkPlayer {
   addListener() {}
   async activateElement() {}
 
-  /** Picks the device to play on: the one already playing, else a computer (the Spotify app here), else any. Empty if none. */
-  async findDevice(): Promise<string> {
+  /**
+   * Picks the device to play on: the one already playing, else a computer
+   * (the Spotify app here), else any; or, given a name, only that device
+   * (librespot's). Empty if none.
+   */
+  async findDevice(name?: string): Promise<string> {
     const answer = await this.api<{ devices?: ApiDevice[] } | undefined>('/me/player/devices');
     const usable = (answer?.devices ?? []).filter((d) => d.id && !d.is_restricted);
-    const pick = usable.find((d) => d.is_active) ?? usable.find((d) => d.type === 'Computer') ?? usable[0];
+    const pick = name ? usable.find((d) => d.name === name) : (usable.find((d) => d.is_active) ?? usable.find((d) => d.type === 'Computer') ?? usable[0]);
     this.device = pick?.id ?? '';
     this.deviceName = pick?.name ?? '';
     return this.device;
@@ -484,15 +506,19 @@ class SpotifyBackend implements Backend {
   }
   async pause() {
     this.service.notePause();
+    this.service.flushAudio();
     await this.service.sdk?.pause();
   }
   async seek(seconds: number) {
     this.service.noteSeek(seconds);
+    this.service.flushAudio();
     await this.service.sdk?.seek(Math.round(seconds * 1000));
   }
   setVolume(volume: number) {
     this.service.volume = volume;
-    void this.service.sdk?.setVolume(volume).catch(() => {});
+    // librespot's audio plays in this page: set its volume here, not on the device.
+    if (this.service.audioInPage) this.service.pcmVolume(volume);
+    else void this.service.sdk?.setVolume(volume).catch(() => {});
   }
   position() {
     return this.service.position();
@@ -541,17 +567,103 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
   readonly backend = new SpotifyBackend(this);
 
   /**
-   * Spotify plays in the Spotify app (Spotify Connect) rather than in this
-   * page: always in the desktop app, whose Electron has no Widevine for
-   * Spotify's web player, and in the browser when chosen in Settings.
+   * Where Spotify plays. 'page': Spotify's web player in this page (needs
+   * Widevine: Chrome and Edge have it, and so does the desktop app, which is
+   * built on castLabs' Electron, once the module has installed). 'app': the
+   * Spotify app, controlled through Spotify Connect (chosen in Settings, or
+   * in the desktop app while Widevine isn't ready). 'librespot': the desktop
+   * app's bundled librespot, a Connect device whose audio plays in this page
+   * (off unless chosen in Settings).
    */
+  get mode(): 'page' | 'app' | 'librespot' {
+    const chosen = settings.get('spotifyPlayback');
+    if (!desktop) return chosen === 'app' ? 'app' : 'page';
+    if (chosen === 'librespot') return this.librespotAvailable ? 'librespot' : 'app';
+    if (chosen === 'app') return 'app';
+    return this.widevine ? 'page' : 'app';
+  }
+
+  /** Playing on a Spotify Connect device (the Spotify app, or librespot) rather than in this page's web player. */
   get connectMode(): boolean {
-    return Boolean(desktop) || settings.get('spotifyPlayback') === 'app';
+    return this.mode !== 'page';
   }
 
   /** The sound comes from another program, so sharing this tab can't hear it. */
   get playsOutsidePage(): boolean {
-    return this.connectMode;
+    return this.mode === 'app';
+  }
+
+  /** librespot's audio plays in this page, so the visualizers hear it directly. */
+  get audioInPage(): boolean {
+    return this.mode === 'librespot';
+  }
+
+  /** Whether Widevine was found (desktop app): null until checked. */
+  widevine: boolean | null = null;
+  /** Whether the desktop app bundles librespot. */
+  librespotAvailable = false;
+  /** What librespot last reported. */
+  librespotState: SpotState | null = null;
+  private pcm: PcmStream | null = null;
+  private pcmFactory: (() => PcmStream) | null = null;
+
+  /** How to make the stream librespot's audio plays through (the engine's). */
+  usePcm(factory: () => PcmStream) {
+    this.pcmFactory = factory;
+  }
+
+  /** Signed 16-bit stereo from librespot. */
+  private audioIn(chunk: Uint8Array) {
+    if (this.mode !== 'librespot') return;
+    this.pcm ??= this.pcmFactory?.() ?? null;
+    if (this.pcm && !this.pcmVolumeSet) this.pcmVolume(this.volume);
+    this.pcm?.push(chunk);
+  }
+
+  private pcmVolumeSet = false;
+  pcmVolume(volume: number) {
+    this.pcm ??= this.pcmFactory?.() ?? null;
+    this.pcm?.setVolume(volume);
+    this.pcmVolumeSet = Boolean(this.pcm);
+  }
+
+  /** Drops buffered librespot audio (a pause, a seek or a new song should be heard at once). */
+  flushAudio() {
+    this.pcm?.flush();
+  }
+
+  /** The PCM stream, for tests. */
+  get pcmStream(): PcmStream | null {
+    return this.pcm;
+  }
+
+  private async checkWidevine() {
+    const before = this.mode;
+    this.widevine = await widevineAvailable();
+    debug('spotify', `Widevine ${this.widevine ? 'available' : 'not available'}`);
+    this.modeChanged(before);
+  }
+
+  /** Switches player when where Spotify plays has changed. */
+  private modeChanged(before: 'page' | 'app' | 'librespot') {
+    if (this.mode === before) return;
+    debug('spotify', `now playing ${this.mode === 'page' ? 'in this page' : this.mode === 'app' ? 'in the Spotify app' : 'through librespot'}`);
+    this.switchPlayers(before);
+  }
+
+  private switchPlayers(before: 'page' | 'app' | 'librespot') {
+    if (before === 'librespot' && this.mode !== 'librespot') {
+      desktop?.spot?.stop();
+      this.pcm?.flush();
+    }
+    if (this.sdk) {
+      this.generation++;
+      this.sdk.disconnect();
+      this.sdk = null;
+      this.deviceId = null;
+      if (this.tokens) void this.connect().catch(() => {});
+    }
+    this.emit('status', undefined);
   }
 
   sdk: SdkPlayer | null = null;
@@ -597,15 +709,31 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
 
   constructor() {
     super();
+    if (desktop) {
+      // Widevine installs at first launch; check now, and again when the app says it's ready.
+      void this.checkWidevine();
+      desktop.onWidevine?.(() => void this.checkWidevine());
+      if (desktop.spot) {
+        void desktop.spot.available().then((ok) => {
+          const before = this.mode;
+          this.librespotAvailable = ok;
+          this.modeChanged(before);
+        });
+        desktop.spot.onState((state) => {
+          this.librespotState = state;
+          debug('spotify', `librespot: ${state.status}`);
+          this.emit('status', undefined);
+        });
+        desktop.spot.onAudio((chunk) => this.audioIn(chunk));
+      }
+    }
+    let modeBefore = this.mode;
     settings.on('change', (patch) => {
-      if ('spotifyPlayback' in patch && this.sdk) {
-        // Switch players: the page's own, or the Spotify app.
-        this.generation++;
-        this.sdk.disconnect();
-        this.sdk = null;
-        this.deviceId = null;
-        if (this.tokens) void this.connect().catch(() => {});
-        this.emit('status', undefined);
+      if ('spotifyPlayback' in patch) {
+        // Switch players: the page's own, the Spotify app, or librespot.
+        const before = modeBefore;
+        modeBefore = this.mode;
+        if (this.mode !== before) this.switchPlayers(before);
       }
       if (!('spotifyClientId' in patch)) return;
       // Tokens belong to the client ID they were issued for.
@@ -1065,7 +1193,11 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
     this.furthest = 0;
     this.sawPlaying = false;
     if (!this.sdk || (!this.deviceId && !(this.sdk instanceof ConnectPlayer))) await this.connect();
-    if (this.sdk instanceof ConnectPlayer) await this.findSpotifyApp(this.sdk);
+    if (this.sdk instanceof ConnectPlayer) {
+      if (this.mode === 'librespot') await this.findLibrespot(this.sdk);
+      else await this.findSpotifyApp(this.sdk);
+    }
+    this.flushAudio();
     this.expectUri = track.ref;
     this.expectContext = track.context ? track.ref : null;
     this.contextSong = null;
@@ -1094,6 +1226,26 @@ export class SpotifyService extends Emitter<{ status: void }> implements MusicSe
       await start();
     }
     if (this.sdk instanceof ConnectPlayer) this.sdk.follow();
+  }
+
+  /** librespot's Connect device. Starts librespot (signed in with this page's token) if it isn't running. */
+  private async findLibrespot(player: ConnectPlayer) {
+    this.deviceId = (await player.findDevice(LIBRESPOT_NAME)) || null;
+    if (!this.deviceId && desktop?.spot) {
+      debug('spotify', 'starting librespot');
+      this.librespotState = null;
+      desktop.spot.start({ token: await this.token(), name: LIBRESPOT_NAME });
+      for (let i = 0; i < 30 && !this.deviceId; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        // (Updated by librespot's reports while this waits.)
+        const status = (this.librespotState as SpotState | null)?.status;
+        if (status && ['missing', 'auth-failed', 'unreachable', 'failed', 'exited'].includes(status)) break;
+        this.deviceId = (await player.findDevice(LIBRESPOT_NAME)) || null;
+      }
+    }
+    if (!this.deviceId) throw new Error(librespotProblem(this.librespotState));
+    debug('spotify', `playing on librespot ("${player.deviceName}")`);
+    this.emit('status', undefined);
   }
 
   /** The Spotify app to play on. In the desktop app, starts it and waits for it if it isn't running. */

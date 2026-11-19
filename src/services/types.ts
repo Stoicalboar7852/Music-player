@@ -51,6 +51,8 @@ export interface MusicService {
   readonly limits: string[];
   /** The music plays in another program (e.g. the Spotify app), so sharing this tab can't hear it. */
   readonly playsOutsidePage?: boolean;
+  /** The page plays the music's audio itself (librespot in the desktop app), so the visualizers hear it directly, like a local file. */
+  readonly audioInPage?: boolean;
   /** What the paste-a-link box accepts, e.g. "Spotify track, album or playlist link". */
   readonly linkHint: string;
   /** False for services that work without signing in (no Disconnect button). */

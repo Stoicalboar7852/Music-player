@@ -4,6 +4,7 @@ import type { App } from '../app/app';
 import { appBaseUrl, settings, type AutoHide } from '../app/settings';
 import type { Quality } from '../viz/renderer';
 import { desktop } from '../app/desktop';
+import type { SpotifyService } from '../services/spotify';
 import { installer } from '../app/install';
 import { clear, h, icon } from './dom';
 import { CYCLE_CHOICES, segmented, select, toggle } from './gallery';
@@ -43,6 +44,63 @@ function appSection(): HTMLElement {
   };
   installer.on('change', render);
   render();
+  return box;
+}
+
+/** Where Spotify plays: this page (its web player), the Spotify app, or (desktop app) librespot. */
+function spotifyPlaysIn(app: App): HTMLElement {
+  const spotify = app.services.find((s) => s.id === 'spotify') as SpotifyService | undefined;
+  const box = h('div');
+  const render = () => {
+    clear(box);
+    const chosen = settings.get('spotifyPlayback');
+    if (!desktop) {
+      box.append(
+        field(
+          'Plays in',
+          segmented<'page' | 'app'>(
+            [
+              ['page', 'This page'],
+              ['app', 'The Spotify app'],
+            ],
+            chosen === 'app' ? 'app' : 'page',
+            (spotifyPlayback) => settings.set({ spotifyPlayback }),
+          ),
+          "This page: Spotify's web player, here in the browser. The Spotify app: Phosphor controls the Spotify app on this computer, your phone or a speaker (Spotify Connect), for example where the web player won't run. Then the visualizers need the computer's sound, or on a phone the microphone.",
+        ),
+      );
+      return;
+    }
+    const widevine = spotify?.widevine;
+    const librespot = spotify?.librespotAvailable;
+    const options: ['page' | 'app' | 'librespot', string][] = [
+      ['page', 'This app'],
+      ['app', 'The Spotify app'],
+    ];
+    if (librespot) options.push(['librespot', 'librespot']);
+    const notes: (string | HTMLElement)[] = [
+      `This app: Spotify's own web player, inside Phosphor, with no Spotify app needed. ${
+        widevine ? 'Ready.' : widevine === false ? "Not available yet: the Widevine module it needs hasn't installed (the app downloads it from Google at first launch, which needs a connection). Until then Spotify plays in the Spotify app." : 'Checking for the Widevine module it needs…'
+      } The visualizers listen to what the computer plays.`,
+      ' The Spotify app: Phosphor controls the Spotify app on this computer, your phone or a speaker (Spotify Connect).',
+    ];
+    if (librespot) notes.push(' librespot: an unofficial open-source Spotify client built into the app. Its sound plays inside Phosphor, so the visualizers hear it directly, without listening to the whole computer.');
+    box.append(field('Plays in', segmented(options, chosen, (spotifyPlayback) => settings.set({ spotifyPlayback })), h('span', null, notes)));
+    if (chosen === 'librespot') {
+      const state = spotify?.librespotState;
+      box.append(
+        h(
+          'p',
+          { class: 'hint warn' },
+          "Spotify's terms of use don't allow unofficial clients like librespot. Spotify could restrict or close an account that uses one. It needs Spotify Premium, and signs in with your Spotify connection in Phosphor.",
+          state ? ` Status: ${state.status}.` : '',
+        ),
+      );
+    }
+  };
+  render();
+  spotify?.onStatus(render);
+  settings.on('change', (patch) => 'spotifyPlayback' in patch && render());
   return box;
 }
 
@@ -182,20 +240,7 @@ export function openSettings(app: App, section?: string) {
     h('h3', { text: 'Spotify', 'data-section': 'spotify' }),
     h('p', null, 'Needs a Spotify Premium account and a (free) app registered at developer.spotify.com. Full steps are in the README.'),
     field('Client ID', textInput('spotifyClientId', '32-character Client ID from your Spotify app')),
-    desktop
-      ? field('Plays in', h('span', { text: 'The Spotify app' }), "Spotify's web player can't run inside the desktop app, so Phosphor plays your songs in the Spotify app on this computer and controls it (Spotify Connect). Phosphor starts the app if it isn't open.")
-      : field(
-          'Plays in',
-          segmented<'page' | 'app'>(
-            [
-              ['page', 'This page'],
-              ['app', 'The Spotify app'],
-            ],
-            settings.get('spotifyPlayback'),
-            (spotifyPlayback) => settings.set({ spotifyPlayback }),
-          ),
-          'This page: Spotify\'s web player, here in the browser. The Spotify app: Phosphor controls the Spotify app on this computer, your phone or a speaker (Spotify Connect), for example where the web player won\'t run. Then the visualizers need the computer\'s sound, or on a phone the microphone.',
-        ),
+    spotifyPlaysIn(app),
     field(
       'Redirect URI',
       h('div', { class: 'input-row' }, h('input', { class: 'input', type: 'text', readonly: true, value: redirect }), copy),

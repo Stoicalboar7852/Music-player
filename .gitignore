@@ -12,3 +12,5 @@ AuthKey_*.p8
 /desktop/web
 /desktop/node_modules
 /desktop/release
+# librespot binaries, built by CI (or by hand, see the README) before packaging
+/desktop/bin
